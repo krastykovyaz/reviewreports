@@ -11,6 +11,8 @@ from src.model import model_manager
 from src.message.types import HumanMessage, SystemMessage
 from src.utils import dedent
 from src.registry import TOOL
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="firecrawl")
 
 _WEB_SEARCHER_DESCRIPTION = """Search the web for real-time information about any topic.
 This tool performs deep research by:

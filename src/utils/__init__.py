@@ -20,7 +20,11 @@ from .name_utils import get_tag_name, get_newspage_name, get_md5
 from .url_utils import fetch_url
 from .file_utils import get_file_info, file_lock
 from .env_utils import get_env
-from .screenshot_utils import ScreenshotService
+try:
+    from .screenshot_utils import ScreenshotService
+except OSError:
+    # cairo library not available (expected on some systems)
+    ScreenshotService = None
 from .download_utils import (get_jsonparsed_data, 
                              generate_intervals)
 from .hub_utils import push_to_hub_folder

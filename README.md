@@ -63,21 +63,72 @@ ANTHROPIC_API_KEY=abcabcabc
 GOOGLE_API_BASE="xxx"
 GOOGLE_API_KEY="xxx"
 
-#Search API
+# HuggingFace (Recommended - free and no auth required for basic models)
+HF_TOKEN=hf_xxxxxxxxxxxx
+# HF_MODEL=gpt2  # Optional, defaults to gpt2
+# HF_API_BASE=...  # Optional, custom HuggingFace endpoint
+
+# In-house Gemma (optional)
+# Set GEMMA_API_BASE to your local/in-house gemma server (e.g. http://localhost:8080)
+GEMMA_API_BASE="http://localhost:8080"
+# If your in-house endpoint requires an API key, set GEMMA_API_KEY
+GEMMA_API_KEY="optional-api-key-if-required"
+
+# Search API
 BRAVE_SEARCH_API_KEY=abcabcabc
 FIRECRAWL_API_KEY=abcabcabc
-#Github
+# Github
 GITHUB_TOKEN=abcabcabc
 GITHUB_USERNAME=your-github-username
 ```
 
 ## 🎯 Basic Usage
 
-```bash
-# run ESG Agent
-python examples/run_esg_agent.py
+### Available Examples
 
-# run LLMs like GPT family, Gemini family
-python examples/run_esg_api.py
-```
+The `examples/` directory contains ready-to-run demonstrations:
+
+1. **`simple_model_test.py`** - Test model initialization and list available models
+   ```bash
+   python examples/simple_model_test.py
+   ```
+
+2. **`run_esg_agent.py`** - Run the ESG Agent with sample queries
+   ```bash
+   python examples/run_esg_agent.py
+   ```
+
+3. **`run_esg_api.py`** - Start a REST API server for the ESG Agent
+   ```bash
+   pip install fastapi uvicorn  # One-time setup
+   python examples/run_esg_api.py
+   ```
+
+4. **`test_models.py`** - Test all configured LLM providers
+   ```bash
+   python examples/test_models.py
+   ```
+
+For detailed instructions and troubleshooting, see [examples/README.md](examples/README.md).
+
+### Supported LLM Providers
+
+Models are automatically initialized based on available API keys (in order of preference):
+
+1. **HuggingFace** (Recommended) - `huggingface/default`
+   - Requires: `HF_TOKEN`
+   - Free models available without authentication
+
+2. **OpenAI** - `openai/gpt-4o`, `openai/gpt-5`, etc.
+   - Requires: `OPENAI_API_KEY`
+
+3. **OpenRouter** - Multi-provider gateway
+   - Requires: `OPENROUTER_API_KEY`
+
+4. **Anthropic** - `anthropic/claude-sonnet-4.5`, etc.
+   - Requires: `ANTHROPIC_API_KEY`
+
+5. **Google Gemini/Gemma** - Cloud models and in-house Gemma
+   - Requires: `GOOGLE_API_KEY` (for Gemini) or `GEMMA_API_BASE` (for in-house Gemma)
+
 

@@ -19,6 +19,39 @@ from src.tool.workflow_tools.report import Report
 from src.tool.esg_tools.lightrag import LightRAG, QueryParam
 from src.tool.esg_tools.lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from src.tool.esg_tools.lightrag.kg.shared_storage import initialize_pipeline_status
+# было
+from src.tool.esg_tools.lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
+
+# стало
+from src.tool.esg_tools.lightrag.llm.openai import gpt_4o_mini_complete
+from src.tool.esg_tools.lightrag.llm.ollama import ollama_embed
+from src.tool.esg_tools.lightrag.llm.ollama import ollama_embed
+from src.tool.esg_tools.lightrag.utils import EmbeddingFunc
+from src.tool.esg_tools.lightrag.llm.ollama import ollama_model_complete, ollama_embed
+import functools
+
+llm_func = functools.partial(
+    ollama_model_complete,
+    hashing_kv=None,
+    host="http://gpu2.sedan.pro:11434",
+    model="qwen3:30b",
+)
+
+rag = LightRAG(
+    working_dir="workdir/esg_agent/tool/retriever",
+    embedding_func=EmbeddingFunc(
+        embedding_dim=768,
+        max_token_size=8192,
+        func=lambda texts, **kwargs: ollama_embed(
+            texts,
+            embed_model="nomic-embed-text",
+            host="http://gpu2.sedan.pro:11434",
+        )
+    ),
+    llm_model_func=llm_func,
+)
+
+
 
 
 _RETRIEVER_DESCRIPTION = """Retriever tool that retrieves ESG data from a local RAG database.
@@ -120,11 +153,26 @@ class RetrieverTool(Tool):
         """
         if self.base_dir is None:
             raise ValueError("base_dir must be specified for RetrieverTool")
+
+        llm_func = functools.partial(
+            ollama_model_complete,
+            hashing_kv=None,
+            host="http://gpu2.sedan.pro:11434",
+            model="qwen3:30b",
+        )
         
         rag = LightRAG(
-            working_dir=self.base_dir,
-            embedding_func=openai_embed,
-            llm_model_func=gpt_4o_mini_complete,
+            working_dir="workdir/esg_agent/tool/retriever",
+            embedding_func=EmbeddingFunc(
+                embedding_dim=768,
+                max_token_size=8192,
+                func=lambda texts, **kwargs: ollama_embed(
+                    texts,
+                    embed_model="nomic-embed-text",
+                    host="http://gpu2.sedan.pro:11434",
+                )
+            ),
+            llm_model_func=llm_func,
         )
 
         await rag.initialize_storages()

@@ -47,6 +47,7 @@ class ChatGoogle(BaseModel):
     reasoning: Optional[Dict[str, Any]] = None
     
     # Client initialization parameters
+    api_base: Optional[str] = None
     api_key: Optional[str] = None
     timeout: Optional[Union[float, httpx.Timeout]] = None
     max_retries: int = 5
@@ -59,19 +60,39 @@ class ChatGoogle(BaseModel):
         """Prepare client parameters dictionary."""
         if genai is None:
             raise ImportError("google-generativeai package is required. Install it with: pip install google-generativeai")
-        
-        # Configure API key
+
+        import os
+        # Prefer explicitly provided api_key and api_base when available
         if self.api_key:
-            genai.configure(api_key=self.api_key)
-        elif not genai.api_key:
-            # Try to get from environment
-            import os
+            if self.api_base:
+                # Configure both api_key and endpoint if supported by SDK
+                try:
+                    genai.configure(api_key=self.api_key, api_endpoint=self.api_base)
+                except TypeError:
+                    genai.configure(api_key=self.api_key)
+                    if hasattr(genai, "api_endpoint"):
+                        setattr(genai, "api_endpoint", self.api_base)
+            else:
+                genai.configure(api_key=self.api_key)
+        elif self.api_base:
+            # No explicit api_key provided, require GOOGLE_API_KEY in environment
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("Google API key is required in environment when using api_base. Set GOOGLE_API_KEY or pass api_key parameter.")
+            try:
+                genai.configure(api_key=api_key, api_endpoint=self.api_base)
+            except TypeError:
+                genai.configure(api_key=api_key)
+                if hasattr(genai, "api_endpoint"):
+                    setattr(genai, "api_endpoint", self.api_base)
+        else:
+            # Fallback to environment GOOGLE_API_KEY
             api_key = os.getenv("GOOGLE_API_KEY")
             if api_key:
                 genai.configure(api_key=api_key)
             else:
                 raise ValueError("Google API key is required. Set GOOGLE_API_KEY environment variable or pass api_key parameter.")
-        
+
         return {}
 
     def get_client(self, system_instruction: Optional[str] = None):

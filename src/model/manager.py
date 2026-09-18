@@ -12,12 +12,14 @@ load_dotenv(verbose=True)
 
 from src.model.types import ModelConfig, LLMResponse, LLMExtra
 from src.model.openai.chat import ChatOpenAI
+from src.model.ollama.chat import ChatOllama
 from src.model.openai.response import ResponseOpenAI
 from src.model.openai.transcribe import TranscribeOpenAI
 from src.model.openai.embedding import EmbeddingOpenAI
 from src.model.openrouter.chat import ChatOpenRouter
 from src.model.anthropic.chat import ChatAnthropic
 from src.model.google.chat import ChatGoogle
+from src.model.huggingface.chat import ChatHuggingFace
 from src.message.types import Message
 from src.logger import logger
 
@@ -59,9 +61,17 @@ class ModelManager:
                 "id": "response-healing"
             }
         ]
-    
+
+    @property
+    def registed_models(self):
+        """Alias for backward compatibility: mapping of model name -> client instance."""
+        return self.model_clients
+
     async def initialize(self):
         """Initialize the manager and register default models."""
+        # Prefer Hugging Face as primary provider if HF_TOKEN is set
+        await self._initialize_ollama_models()
+        await self._initialize_huggingface_models()
         await self._initialize_openai_models()
         await self._initialize_openrouter_models()
         await self._initialize_anthropic_models()
@@ -604,8 +614,8 @@ class ModelManager:
                 model_id=model["model_id"],
                 model_type=model["model_type"],
                 provider="google",
-                api_base=None,  # Google Gemini doesn't use custom API base
-                api_key=os.getenv("GOOGLE_API_KEY"),
+                api_base=model.get("api_base", None),
+                api_key=model.get("api_key", os.getenv("GOOGLE_API_KEY")),
                 reasoning=model.get("reasoning"),
                 temperature=model.get("temperature"),
                 max_completion_tokens=model.get("max_completion_tokens"),
@@ -613,11 +623,99 @@ class ModelManager:
                 supports_functions=True,
                 supports_vision=True,
                 output_version=None,
+                fallback_model=model.get("fallback_model", None),
+            )
+            self.models[config.model_name] = config
+            await self._create_client(config)
+
+        # Register optional in-house Gemma model if configured via environment variables
+        gemma_api_base = os.getenv("GEMMA_API_BASE")
+        gemma_api_key = os.getenv("GEMMA_API_KEY")
+        if gemma_api_base or gemma_api_key:
+            gemma_config = ModelConfig(
+                model_name="google/gemma-4-E2B-it",
+                model_id="gemma-4-E2B-it",
+                model_type="chat/completions",
+                provider="google",
+                api_base=gemma_api_base,
+                api_key=gemma_api_key or os.getenv("GOOGLE_API_KEY"),
+                reasoning=None,
+                temperature=self.default_temperature,
+                max_completion_tokens=self.max_tokens,
+                supports_streaming=True,
+                supports_functions=True,
+                supports_vision=True,
+                output_version=None,
+                fallback_model=None,
+            )
+            self.models[gemma_config.model_name] = gemma_config
+            await self._create_client(gemma_config)
+
+    async def _initialize_huggingface_models(self):
+        """Initialize Hugging Face models using HF_TOKEN/HF_MODEL env vars."""
+        chat_models = [
+            {
+                "model_name": "huggingface/default",
+                "model_id": os.getenv("HF_MODEL", "gpt2"),
+                "model_type": "chat/completions",
+                "temperature": self.default_temperature,
+                "max_completion_tokens": self.max_tokens,
+                "api_base": os.getenv("HF_API_BASE", "https://api-inference.huggingface.co"),
+                "api_key": os.getenv("HF_TOKEN"),
+            }
+        ]
+
+        for model in chat_models:
+            config = ModelConfig(
+                model_name=model["model_name"],
+                model_id=model["model_id"],
+                model_type=model["model_type"],
+                provider="huggingface",
+                api_base=model.get("api_base"),
+                api_key=model.get("api_key"),
+                temperature=model.get("temperature"),
+                max_completion_tokens=model.get("max_completion_tokens"),
+                supports_streaming=False,
+                supports_functions=False,
+                supports_vision=False,
+                output_version=None,
                 fallback_model=None,
             )
             self.models[config.model_name] = config
             await self._create_client(config)
-    
+
+    async def _initialize_ollama_models(self):
+        ollama_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+        models = [
+            {
+                "model_name": "ollama/gemma4-e2b",
+                "model_id": "gemma4:e2b",
+                "max_tokens": 512,
+            },
+            {
+                "model_name": "ollama/qwen3-30b",
+                "model_id": "qwen3:30b",
+            },
+        ]
+        for model in models:
+            config = ModelConfig(
+                model_name=model["model_name"],
+                model_id=model["model_id"],
+                model_type="chat/completions",
+                provider="ollama",
+                api_base=ollama_base,
+                api_key="ollama",  # Ollama игнорирует ключ, но поле required
+                temperature=self.default_temperature,
+                max_completion_tokens=self.max_tokens,
+                supports_streaming=True,
+                supports_functions=True,
+                supports_vision=False,
+                output_version=None,
+                fallback_model=None,
+            )
+            self.models[config.model_name] = config
+            await self._create_client(config)
+
     async def _create_client(self, config: ModelConfig) -> None:
         """Create and cache a client for the given model config."""
         if config.provider == "openrouter":
@@ -637,6 +735,16 @@ class ModelManager:
                 logger.info(f"| Created ChatOpenRouter client for {config.model_name}")
             else:
                 raise ValueError(f"Unsupported model type {config.model_type} for OpenRouter provider")
+        elif config.provider == "ollama":
+            if config.model_type == "chat/completions":
+                client = ChatOllama(
+                    model=config.model_id,
+                    api_key=config.api_key,
+                    base_url=config.api_base,
+                    temperature=config.temperature or self.default_temperature,
+                    max_completion_tokens=config.max_completion_tokens or self.max_tokens,
+                )
+                logger.info(f"| Created ChatOllama client for {config.model_name}")
         elif config.provider == "anthropic":
             # Anthropic models (only chat/completions supported for now)
             if config.model_type == "chat/completions":
@@ -651,12 +759,26 @@ class ModelManager:
                 logger.info(f"| Created ChatAnthropic client for {config.model_name}")
             else:
                 raise ValueError(f"Unsupported model type {config.model_type} for Anthropic provider")
+        elif config.provider == "huggingface":
+            # Hugging Face models (text-generation via Inference API)
+            if config.model_type == "chat/completions":
+                client = ChatHuggingFace(
+                    model=config.model_id,
+                    api_key=config.api_key,
+                    api_base=config.api_base or os.getenv("HF_API_BASE", "https://api-inference.huggingface.co"),
+                    temperature=config.temperature or self.default_temperature,
+                    max_new_tokens=config.max_completion_tokens or self.max_tokens,
+                )
+                logger.info(f"| Created ChatHuggingFace client for {config.model_name}")
+            else:
+                raise ValueError(f"Unsupported model type {config.model_type} for Hugging Face provider")
         elif config.provider == "google":
             # Google Gemini models (only chat/completions supported for now)
             if config.model_type == "chat/completions":
                 client = ChatGoogle(
                     model=config.model_id,
                     api_key=config.api_key,
+                    api_base=config.api_base,
                     reasoning=config.reasoning if config.reasoning else None,
                     temperature=config.temperature or self.default_temperature,
                     max_output_tokens=config.max_completion_tokens or self.max_tokens,

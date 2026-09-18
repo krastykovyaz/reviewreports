@@ -17,7 +17,7 @@ log_path = "agent.log"
 
 use_local_proxy = True
 version = "1.0.0"
-model_name = "openrouter/gemini-3-flash-preview"
+model_name = "ollama/qwen3-30b"
 concurrency = 4
 
 env_names = []
@@ -37,9 +37,9 @@ tool_names = [
     'plotter',
     'report',
     'browser',
-    'deep_researcher',
-    'deep_analyzer',
-    "reformulator",
+    # 'deep_researcher',
+    # 'deep_analyzer',
+    # "reformulator",
 ]
 
 #-----------------RETRIEVER TOOL CONFIG-----------------

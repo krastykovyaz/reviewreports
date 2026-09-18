@@ -1,6 +1,6 @@
 """Operator Browser Environment for AgentWorld - provides browser automation as an environment."""
 
-from tkinter import NO
+# from tkinter import NO
 from typing import Any, Dict, List, Union, Optional, Type
 from pydantic import BaseModel, Field, ConfigDict
 import os

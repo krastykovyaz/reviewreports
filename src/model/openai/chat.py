@@ -267,6 +267,9 @@ class ChatOpenAI(BaseModel):
         Returns:
             ChatCompletion object
         """
+        print(f"[DEBUG] Calling model: {self.model}")
+        print(f"[DEBUG] Base URL: {self.base_url}")
+        print(f"[DEBUG] Params: {params}")
         client = self.get_client()
         response = await client.chat.completions.create(
             model=self.model,

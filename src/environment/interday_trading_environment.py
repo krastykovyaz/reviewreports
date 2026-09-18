@@ -1,4 +1,4 @@
-from tkinter import N
+# from tkinter import N
 import warnings
 warnings.filterwarnings("ignore")
 from copy import deepcopy
