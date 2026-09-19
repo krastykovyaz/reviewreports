@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<title>{{ t('ui.app_title') }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { margin-bottom: 0.2rem; }
+  p.tagline { color: #666; margin-top: 0; }
+  .lang-switch { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+  .lang-switch a { padding: 0.3rem 0.7rem; border-radius: 6px; border: 1px solid rgba(127,127,127,0.4); text-decoration: none; color: inherit; font-size: 0.85rem; font-weight: 600; }
+  .lang-switch a.active { background: #2563eb; border-color: #2563eb; color: white; }
+  form { display: flex; flex-direction: column; gap: 1rem; margin-top: 2rem; }
+  label { display: flex; flex-direction: column; gap: 0.35rem; font-weight: 600; font-size: 0.9rem; }
+  input, select { font: inherit; padding: 0.6rem 0.7rem; border-radius: 8px; border: 1px solid rgba(127,127,127,0.4); background: transparent; color: inherit; }
+  button { font: inherit; padding: 0.7rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; font-weight: 600; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+  .error { color: #cf222e; margin-top: 1rem; }
+</style>
+</head>
+<body>
+  <div class="lang-switch">
+    {% for code in languages %}
+    <a href="/?lang={{ code }}" class="{{ 'active' if code == lang else '' }}">{{ code.upper() }}</a>
+    {% endfor %}
+  </div>
+
+  <h1>{{ t('ui.app_title') }}</h1>
+  <p class="tagline">{{ t('ui.tagline') }}</p>
+
+  <form action="/submit" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="lang" value="{{ lang }}">
+    <label>{{ t('ui.report_kind') }}
+      <select name="kind" id="kind" onchange="toggleInputs()">
+        {% for value, label in kinds.items() %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div id="url-field">
+      <label>{{ t('ui.url_or_repo') }}
+        <input type="text" name="input_value" placeholder="https://example.com">
+      </label>
+    </div>
+
+    <div id="file-field" style="display:none">
+      <label>{{ t('ui.file') }}
+        <input type="file" name="file">
+      </label>
+    </div>
+
+    <label>{{ t('ui.model_optional') }}
+      <input type="text" name="model_name" placeholder="e.g. ollama/qwen3-30b">
+    </label>
+
+    <button type="submit">{{ t('ui.generate') }}</button>
+  </form>
+
+  <script>
+    const FILE_KINDS = {{ file_kinds | tojson }};
+    function toggleInputs() {
+      const kind = document.getElementById('kind').value;
+      const isFile = FILE_KINDS.includes(kind);
+      document.getElementById('url-field').style.display = isFile ? 'none' : 'block';
+      document.getElementById('file-field').style.display = isFile ? 'block' : 'none';
+    }
+    toggleInputs();
+  </script>
+</body>
+</html>

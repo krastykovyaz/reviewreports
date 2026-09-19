@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<title>{% if job.status == "done" %}{{ t('ui.ready_title') }}{% else %}{{ t('ui.generating_title') }}{% endif %}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% if job.status in ("pending", "running") %}
+<meta http-equiv="refresh" content="2">
+{% endif %}
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  a.back { color: #2563eb; text-decoration: none; font-size: 0.9rem; }
+  .downloads a { margin-right: 0.75rem; }
+  .spinner { width: 28px; height: 28px; border: 3px solid rgba(127,127,127,0.25); border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 1rem 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  iframe { width: 100%; height: 80vh; border: 1px solid rgba(127,127,127,0.25); border-radius: 8px; margin-top: 1rem; }
+  .error-box { color: #cf222e; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <a class="back" href="/?lang={{ lang }}">&larr; {{ t('ui.new_report') }}</a>
+
+  {% if job.status in ("pending", "running") %}
+    <h1>{{ t('ui.generating_title') }}</h1>
+    <p>{{ t('ui.subject') }}: {{ job.subject }} &middot; {{ t('ui.status') }}: {{ job.status }}</p>
+    <div class="spinner"></div>
+    <p>{{ t('ui.refresh_note') }}</p>
+  {% elif job.status == "failed" %}
+    <h1>{{ t('ui.failed_title') }}</h1>
+    <p class="error-box">{{ job.error }}</p>
+  {% else %}
+    <h1>{{ t('ui.ready_title') }}</h1>
+    <p class="downloads">
+      <a href="/reports/{{ job.id }}.pdf">{{ t('ui.download_pdf') }}</a>
+      <a href="/reports/{{ job.id }}.md">{{ t('ui.download_md') }}</a>
+      <a href="/reports/{{ job.id }}.html">{{ t('ui.download_html') }}</a>
+      <a href="/reports/{{ job.id }}.tex">{{ t('ui.download_tex') }}</a>
+    </p>
+    <iframe src="/reports/{{ job.id }}.html" title="Report"></iframe>
+  {% endif %}
+</body>
+</html>
