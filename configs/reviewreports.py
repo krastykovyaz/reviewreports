@@ -15,7 +15,7 @@ workdir = f"workdir/{tag}"
 log_path = "agent.log"
 
 version = "1.0.0"
-model_name = "ollama/qwen3-30b"
+model_name = "deepseek/deepseek-chat"
 concurrency = 4
 
 env_names = []

@@ -73,6 +73,7 @@ class ModelManager:
         await self._initialize_ollama_models()
         await self._initialize_huggingface_models()
         await self._initialize_openai_models()
+        await self._initialize_deepseek_models()
         await self._initialize_openrouter_models()
         await self._initialize_anthropic_models()
         await self._initialize_google_models()
@@ -236,6 +237,50 @@ class ModelManager:
             self.models[config.model_name] = config
             await self._create_client(config)
     
+    async def _initialize_deepseek_models(self):
+        """Initialize DeepSeek models.
+
+        DeepSeek's API is OpenAI-protocol-compatible (chat/completions shape,
+        including response_format), so this reuses ChatOpenAI itself rather
+        than a new client class — just a distinct api_base/api_key and a
+        "deepseek/" model_name prefix. Registered with provider="openai" so
+        _create_client's existing ChatOpenAI branch picks it up unchanged.
+
+        DeepSeek's chat/reasoner models are text-only (no vision), so the
+        Design & UX pillar (which sends a screenshot) will not work with
+        these models — use a vision-capable model for that pillar specifically.
+        """
+        chat_models = [
+            {
+                "model_name": "deepseek/deepseek-chat",
+                "model_id": "deepseek-chat",
+                "fallback_model": "deepseek/deepseek-reasoner",
+            },
+            {
+                "model_name": "deepseek/deepseek-reasoner",
+                "model_id": "deepseek-reasoner",
+                "fallback_model": "deepseek/deepseek-chat",
+            },
+        ]
+        for model in chat_models:
+            config = ModelConfig(
+                model_name=model["model_name"],
+                model_id=model["model_id"],
+                model_type="chat/completions",
+                provider="openai",
+                api_base=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+                api_key=os.getenv("DEEPSEEK_API_KEY"),
+                temperature=self.default_temperature,
+                max_completion_tokens=self.max_tokens,
+                supports_streaming=True,
+                supports_functions=True,
+                supports_vision=False,
+                output_version=None,
+                fallback_model=model.get("fallback_model"),
+            )
+            self.models[config.model_name] = config
+            await self._create_client(config)
+
     async def _initialize_openrouter_models(self):
         """Initialize OpenRouter models (OpenAI models via OpenRouter)."""
         chat_models = [

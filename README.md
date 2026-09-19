@@ -59,6 +59,9 @@ OPENAI_API_KEY=abcabcabc
 # Anthropic API Key
 ANTHROPIC_API_BASE=https://api.anthropic.com
 ANTHROPIC_API_KEY=abcabcabc
+# DeepSeek (OpenAI-compatible API)
+DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_API_KEY=abcabcabc
 # Google
 GOOGLE_API_BASE="xxx"
 GOOGLE_API_KEY="xxx"
@@ -128,7 +131,11 @@ Models are automatically initialized based on available API keys (in order of pr
 4. **Anthropic** - `anthropic/claude-sonnet-4.5`, etc.
    - Requires: `ANTHROPIC_API_KEY`
 
-5. **Google Gemini/Gemma** - Cloud models and in-house Gemma
+5. **DeepSeek** - `deepseek/deepseek-chat`, `deepseek/deepseek-reasoner`
+   - Requires: `DEEPSEEK_API_KEY`
+   - OpenAI-compatible API; default LLM for reviewreports's judgment pillars. Text-only — no vision support.
+
+6. **Google Gemini/Gemma** - Cloud models and in-house Gemma
    - Requires: `GOOGLE_API_KEY` (for Gemini) or `GEMMA_API_BASE` (for in-house Gemma)
 
 
