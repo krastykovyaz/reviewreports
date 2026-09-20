@@ -47,3 +47,8 @@ dirtyjson>=1.0.8
 langchain-core>=0.3.0  # only for the type/message classes in
                         # src.environment.browser.actor.page; none of
                         # langchain's actual integrations are used
+
+# src.report.render.pdf (only imported when a .pdf report is requested).
+# Needs system libs libpango-1.0-0, libpangocairo-1.0-0, libgdk-pixbuf-2.0-0,
+# libcairo2 (already present on Ubuntu 24.04's default image).
+weasyprint>=60.0
