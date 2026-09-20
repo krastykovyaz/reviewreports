@@ -49,11 +49,15 @@
     border-radius: var(--radius); background: var(--bg);
   }
   .error-box { color: #dc2626; white-space: pre-wrap; font-size: 13px; }
+  .fix-prompt-btn {
+    font-family: var(--font); font-size: 13px; color: var(--text2); cursor: pointer;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 6px 12px;
+  }
+  .fix-prompt-btn:hover { border-color: #999; color: var(--text); }
 </style>
 </head>
 <body>
-  <a class="back" href="/?lang={{ lang }}">&larr; {{ t('ui.new_report') }}</a>
-
   {% if job.status in ("pending", "running") %}
     <h1>{{ t('ui.generating_title') }}</h1>
     <p class="meta">{{ t('ui.subject') }}: {{ job.subject }} &middot; {{ t('ui.status') }}: {{ job.status }}</p>
@@ -64,12 +68,39 @@
     <p class="error-box">{{ job.error }}</p>
   {% else %}
     <p class="downloads">
-      <a href="/reports/{{ job.id }}.pdf">{{ t('ui.download_pdf') }}</a>
-      <a href="/reports/{{ job.id }}.md">{{ t('ui.download_md') }}</a>
-      <a href="/reports/{{ job.id }}.html">{{ t('ui.download_html') }}</a>
-      <a href="/reports/{{ job.id }}.tex">{{ t('ui.download_tex') }}</a>
+      <a href="/audit/reports/{{ job.id }}.pdf">{{ t('ui.download_pdf') }}</a>
+      <a href="/audit/reports/{{ job.id }}.md">{{ t('ui.download_md') }}</a>
+      <a href="/audit/reports/{{ job.id }}.html">{{ t('ui.download_html') }}</a>
+      <a href="/audit/reports/{{ job.id }}.tex">{{ t('ui.download_tex') }}</a>
+      {% if fix_prompt %}
+      <button class="fix-prompt-btn" data-prompt="{{ fix_prompt }}" onclick="copyFixPrompt(this)">{{ t('ui.fix_prompt') }}</button>
+      {% endif %}
     </p>
-    <iframe src="/reports/{{ job.id }}.html" title="Report"></iframe>
+    <iframe src="/audit/reports/{{ job.id }}.html" title="Report"></iframe>
   {% endif %}
+  <script>
+    function copyFixPrompt(btn) {
+      var text = btn.dataset.prompt;
+      var original = btn.textContent;
+      var done = function () {
+        btn.textContent = {{ t('ui.copied')|tojson }};
+        setTimeout(function () { btn.textContent = original; }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
+      } else {
+        fallbackCopy(text, done);
+      }
+    }
+    function fallbackCopy(text, done) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy:', text); }
+      document.body.removeChild(ta);
+    }
+  </script>
 </body>
 </html>
