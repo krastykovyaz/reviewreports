@@ -1,0 +1,54 @@
+# Minimal install for running just the website_audit service
+# (uvicorn src.service.app:app), without the full requirements.txt's
+# ESG-agent/trading-bot dependency surface (torch, pandas, numpy,
+# huggingface_hub, crawl4ai, firecrawl, TA-lib, binance/alpaca SDKs, ...),
+# none of which website_audit's own code path touches.
+#
+# Install:
+#   python3.12 -m venv venv && source venv/bin/activate
+#   pip install -r requirements-website-audit.txt
+#
+# Requires src/review/__init__.py, src/review/generate.py,
+# src/environment/__init__.py, and src/utils/__init__.py to lazy-import
+# code_review/document_review and their heavy transitive dependencies
+# (see those files' module docstrings) — without that, importing
+# src.service.app still pulls in the full dependency tree regardless of
+# which packages are installed here.
+
+fastapi>=0.110.0
+uvicorn>=0.29.0
+aiosqlite>=0.20.0
+jinja2>=3.1.0
+httpx>=0.24.0
+pydantic>=2.0.0
+python-dotenv>=1.1.1
+python-multipart>=0.0.9
+
+# src.logger (used by every collector via src.utils)
+rich>=13.0.0
+
+# src.utils.utils (parse_json_blob etc.)
+json5>=0.9.0
+
+# src.environment.browser (Chromium/CDP automation used by src.audit.browser_session)
+psutil>=5.9.0
+pydantic-settings>=2.0.0
+bubus>=1.5.6
+cdp-use>=1.4.4
+playwright>=1.40.0  # only the Python package; reuses whichever Chromium
+                     # build is already cached under ~/.cache/ms-playwright
+                     # (see src/audit/browser_session.py:_installed_chromium_path)
+                     # rather than downloading its own
+
+# src.model (multi-provider LLM manager; used by Content/Design & UX pillars,
+# which report as N/A when no provider API key is configured)
+aiohttp>=3.8.0
+dirtyjson>=1.0.8
+langchain-core>=0.3.0  # only for the type/message classes in
+                        # src.environment.browser.actor.page; none of
+                        # langchain's actual integrations are used
+
+# src.report.render.pdf (only imported when a .pdf report is requested).
+# Needs system libs libpango-1.0-0, libpangocairo-1.0-0, libgdk-pixbuf-2.0-0,
+# libcairo2 (already present on Ubuntu 24.04's default image).
+weasyprint>=60.0

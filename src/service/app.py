@@ -200,10 +200,22 @@ async def submit(
     return RedirectResponse(url=f"/view/{job_id}", status_code=303)
 
 
+def _build_fix_prompt(subject: str, report: Optional[dict], lang: str) -> Optional[str]:
+    recommendations = (report or {}).get("recommendations") or []
+    if not recommendations:
+        return None
+    ordered = sorted(recommendations, key=lambda r: r.get("priority", 0))
+    lines = [f"{i + 1}. {r.get('action', '')}\n   {r.get('rationale', '')}" for i, r in enumerate(ordered)]
+    header = t_chrome("ui.fix_prompt_header", lang)
+    return f"{header} {subject}:\n\n" + "\n\n".join(lines)
+
+
 @app.get("/view/{job_id}", response_class=HTMLResponse)
 async def view_report(request: Request, job_id: str):
     job = await _store.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     lang = normalize_lang(job["lang"])
-    return _templates.TemplateResponse(request, "view.html", {"job": job, "lang": lang, "t": lambda key, **kw: t_chrome(key, lang, **kw)})
+    report = json.loads(job["report_json"]) if job["report_json"] else None
+    fix_prompt = _build_fix_prompt(job["subject"], report, lang)
+    return _templates.TemplateResponse(request, "view.html", {"job": job, "report": report, "fix_prompt": fix_prompt, "lang": lang, "t": lambda key, **kw: t_chrome(key, lang, **kw)})

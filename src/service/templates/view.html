@@ -7,37 +7,144 @@
 {% if job.status in ("pending", "running") %}
 <meta http-equiv="refresh" content="2">
 {% endif %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  a.back { color: #2563eb; text-decoration: none; font-size: 0.9rem; }
-  .downloads a { margin-right: 0.75rem; }
-  .spinner { width: 28px; height: 28px; border: 3px solid rgba(127,127,127,0.25); border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 1rem 0; }
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --bg2: #f7f7f7;
+    --border: #e5e5e5;
+    --text: #1a1a1a; --text2: #4a4a4a; --text3: #888;
+    --blue: #0066ff;
+    --radius: 8px; --radius-sm: 5px;
+    --font: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--font); font-size: 14px; line-height: 1.5;
+    color: var(--text); background: var(--bg);
+    max-width: 960px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  a.back {
+    display: inline-block; color: var(--text3); text-decoration: none;
+    font-size: 13px; margin-bottom: 1.25rem;
+  }
+  a.back:hover { color: var(--text); }
+  h1 { font-size: 15px; font-weight: 600; margin-bottom: 0.5rem; }
+  .meta { color: var(--text3); font-size: 13px; margin-bottom: 1rem; }
+  .downloads { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; }
+  .downloads a, .downloads button {
+    font-family: var(--font); font-size: 13px; color: var(--text2); cursor: pointer;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 6px 12px; text-decoration: none;
+  }
+  .downloads a:hover, .downloads button:hover { border-color: #999; color: var(--text); }
+  .downloads button.active { background: var(--bg); border-color: #999; color: var(--text); font-weight: 600; }
+  .spinner {
+    width: 22px; height: 22px; border: 3px solid var(--border);
+    border-top-color: var(--blue); border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 1rem 0;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
-  iframe { width: 100%; height: 80vh; border: 1px solid rgba(127,127,127,0.25); border-radius: 8px; margin-top: 1rem; }
-  .error-box { color: #cf222e; white-space: pre-wrap; }
+  iframe {
+    width: 100%; height: 80vh; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--bg);
+  }
+  .error-box { color: #dc2626; white-space: pre-wrap; font-size: 13px; }
+  .fix-prompt-btn {
+    font-family: var(--font); font-size: 13px; color: var(--text2); cursor: pointer;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 6px 12px;
+  }
+  .fix-prompt-btn:hover { border-color: #999; color: var(--text); }
 </style>
 </head>
 <body>
-  <a class="back" href="/?lang={{ lang }}">&larr; {{ t('ui.new_report') }}</a>
-
   {% if job.status in ("pending", "running") %}
     <h1>{{ t('ui.generating_title') }}</h1>
-    <p>{{ t('ui.subject') }}: {{ job.subject }} &middot; {{ t('ui.status') }}: {{ job.status }}</p>
+    <p class="meta">{{ t('ui.subject') }}: {{ job.subject }} &middot; {{ t('ui.status') }}: {{ job.status }}</p>
     <div class="spinner"></div>
-    <p>{{ t('ui.refresh_note') }}</p>
+    <p class="meta">{{ t('ui.refresh_note') }}</p>
   {% elif job.status == "failed" %}
     <h1>{{ t('ui.failed_title') }}</h1>
     <p class="error-box">{{ job.error }}</p>
   {% else %}
-    <h1>{{ t('ui.ready_title') }}</h1>
     <p class="downloads">
-      <a href="/reports/{{ job.id }}.pdf">{{ t('ui.download_pdf') }}</a>
-      <a href="/reports/{{ job.id }}.md">{{ t('ui.download_md') }}</a>
-      <a href="/reports/{{ job.id }}.html">{{ t('ui.download_html') }}</a>
-      <a href="/reports/{{ job.id }}.tex">{{ t('ui.download_tex') }}</a>
+      <a href="/audit/reports/{{ job.id }}.pdf">{{ t('ui.download_pdf') }}</a>
+      <button class="fmt-btn" data-ext="md" onclick="showFormat(this)">{{ t('ui.download_md') }}</button>
+      <button class="fmt-btn active" data-ext="html" onclick="showFormat(this)">{{ t('ui.download_html') }}</button>
+      <button class="fmt-btn" data-ext="tex" onclick="showFormat(this)">{{ t('ui.download_tex') }}</button>
+      {% if fix_prompt %}
+      <button class="fix-prompt-btn" data-prompt="{{ fix_prompt }}" onclick="copyFixPrompt(this)">{{ t('ui.fix_prompt') }}</button>
+      {% endif %}
     </p>
-    <iframe src="/reports/{{ job.id }}.html" title="Report"></iframe>
+    <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html" title="Report"></iframe>
   {% endif %}
+  <script>
+    function escapeHtml(text) {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function renderMarkdownDoc(text) {
+      // Escape first so any raw HTML scraped from the audited site (e.g. a
+      // page title containing "<script>") can never execute here — marked
+      // then only ever sees literal "&lt;script&gt;" text, not a tag.
+      var body = window.marked ? marked.parse(escapeHtml(text)) : '<pre>' + escapeHtml(text) + '</pre>';
+      return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+        'body{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:900px;' +
+        'margin:1.5rem auto;padding:0 1rem;line-height:1.6;color:#1a1a1a;}' +
+        'h1,h2,h3{margin-top:1.5rem;margin-bottom:0.4rem;}' +
+        'table{border-collapse:collapse;width:100%;margin:1rem 0;}' +
+        'th,td{text-align:left;padding:0.5rem 0.75rem;border-bottom:1px solid #e5e5e5;vertical-align:top;}' +
+        'th{font-weight:600;}' +
+        'code{background:#f7f7f7;padding:1px 5px;border-radius:4px;font-family:"SF Mono",monospace;font-size:0.9em;}' +
+        'pre code{display:block;padding:12px;overflow:auto;}' +
+        'hr{border:none;border-top:1px solid #e5e5e5;margin:1.5rem 0;}' +
+        '</style></head><body>' + body + '</body></html>';
+    }
+    function showFormat(btn) {
+      document.querySelectorAll('.fmt-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      var frame = document.getElementById('reportFrame');
+      var ext = btn.dataset.ext;
+      if (ext === 'html') {
+        frame.removeAttribute('srcdoc');
+        frame.src = "/audit/reports/{{ job.id }}.html";
+        return;
+      }
+      if (ext === 'tex') {
+        // LaTeX source only matters once compiled — show the actual
+        // compiled PDF (same content) rather than raw .tex markup.
+        frame.removeAttribute('srcdoc');
+        frame.src = "/audit/reports/{{ job.id }}.pdf";
+        return;
+      }
+      fetch("/audit/reports/{{ job.id }}." + ext).then(function (r) { return r.text(); }).then(function (text) {
+        frame.removeAttribute('src');
+        frame.srcdoc = renderMarkdownDoc(text);
+      }).catch(function () {});
+    }
+    function copyFixPrompt(btn) {
+      var text = btn.dataset.prompt;
+      var original = btn.textContent;
+      var done = function () {
+        btn.textContent = {{ t('ui.copied')|tojson }};
+        setTimeout(function () { btn.textContent = original; }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
+      } else {
+        fallbackCopy(text, done);
+      }
+    }
+    function fallbackCopy(text, done) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy:', text); }
+      document.body.removeChild(ta);
+    }
+  </script>
 </body>
 </html>
