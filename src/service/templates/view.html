@@ -32,12 +32,13 @@
   h1 { font-size: 15px; font-weight: 600; margin-bottom: 0.5rem; }
   .meta { color: var(--text3); font-size: 13px; margin-bottom: 1rem; }
   .downloads { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; }
-  .downloads a {
-    font-family: var(--font); font-size: 13px; color: var(--text2);
+  .downloads a, .downloads button {
+    font-family: var(--font); font-size: 13px; color: var(--text2); cursor: pointer;
     background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 6px 12px; text-decoration: none;
   }
-  .downloads a:hover { border-color: #999; color: var(--text); }
+  .downloads a:hover, .downloads button:hover { border-color: #999; color: var(--text); }
+  .downloads button.active { background: var(--bg); border-color: #999; color: var(--text); font-weight: 600; }
   .spinner {
     width: 22px; height: 22px; border: 3px solid var(--border);
     border-top-color: var(--blue); border-radius: 50%;
@@ -69,16 +70,37 @@
   {% else %}
     <p class="downloads">
       <a href="/audit/reports/{{ job.id }}.pdf">{{ t('ui.download_pdf') }}</a>
-      <a href="/audit/reports/{{ job.id }}.md">{{ t('ui.download_md') }}</a>
-      <a href="/audit/reports/{{ job.id }}.html">{{ t('ui.download_html') }}</a>
-      <a href="/audit/reports/{{ job.id }}.tex">{{ t('ui.download_tex') }}</a>
+      <button class="fmt-btn" data-ext="md" onclick="showFormat(this)">{{ t('ui.download_md') }}</button>
+      <button class="fmt-btn active" data-ext="html" onclick="showFormat(this)">{{ t('ui.download_html') }}</button>
+      <button class="fmt-btn" data-ext="tex" onclick="showFormat(this)">{{ t('ui.download_tex') }}</button>
       {% if fix_prompt %}
       <button class="fix-prompt-btn" data-prompt="{{ fix_prompt }}" onclick="copyFixPrompt(this)">{{ t('ui.fix_prompt') }}</button>
       {% endif %}
     </p>
-    <iframe src="/audit/reports/{{ job.id }}.html" title="Report"></iframe>
+    <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html" title="Report"></iframe>
   {% endif %}
   <script>
+    function showFormat(btn) {
+      document.querySelectorAll('.fmt-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      var frame = document.getElementById('reportFrame');
+      var ext = btn.dataset.ext;
+      var url = "/audit/reports/{{ job.id }}." + ext;
+      if (ext === 'html') {
+        frame.removeAttribute('srcdoc');
+        frame.src = url;
+        return;
+      }
+      fetch(url).then(function (r) { return r.text(); }).then(function (text) {
+        var esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        frame.removeAttribute('src');
+        frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+          'body{margin:0;padding:16px;white-space:pre-wrap;word-wrap:break-word;' +
+          'font-family:"SF Mono","Fira Code","Cascadia Code",monospace;font-size:13px;' +
+          'line-height:1.5;color:#1a1a1a;background:#fff;}</style></head>' +
+          '<body>' + esc + '</body></html>';
+      }).catch(function () {});
+    }
     function copyFixPrompt(btn) {
       var text = btn.dataset.prompt;
       var original = btn.textContent;
