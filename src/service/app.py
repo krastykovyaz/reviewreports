@@ -39,6 +39,7 @@ _BINARY_FORMATS = {"pdf"}
 _KIND_LABEL_KEYS = {
     "website_audit": "ui.kind.website_audit",
     "code_review": "ui.kind.code_review",
+    "app_review": "ui.kind.app_review",
     "resume_review": "ui.kind.resume_review",
     "presentation_review": "ui.kind.presentation_review",
     "book_review": "ui.kind.book_review",

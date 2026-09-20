@@ -4,7 +4,7 @@ from src.review.generate import generate_report, supported_kinds
 
 
 def test_supported_kinds_lists_all_registered_kinds():
-    assert supported_kinds() == ["website_audit", "code_review", "resume_review", "presentation_review", "book_review"]
+    assert supported_kinds() == ["website_audit", "code_review", "app_review", "resume_review", "presentation_review", "book_review"]
 
 
 @pytest.mark.asyncio

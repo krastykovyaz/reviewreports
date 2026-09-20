@@ -10,6 +10,7 @@ from .deep_analyzer import DeepAnalyzerTool
 from .report import ReportTool
 from .website_audit import WebsiteAuditTool
 from .code_review import CodeReviewTool
+from .app_review import AppReviewTool
 from .document_review import DocumentReviewTool
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "ReportTool",
     "WebsiteAuditTool",
     "CodeReviewTool",
+    "AppReviewTool",
     "DocumentReviewTool"
 ]

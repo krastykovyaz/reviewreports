@@ -10,12 +10,14 @@ from typing import Awaitable, Callable, Dict, Optional
 
 from src.audit.website import run_website_audit
 from src.report.schema import Report
+from src.review.app_review import run_app_review
 from src.review.code_review import run_code_review
 from src.review.document import run_document_review
 
 _HANDLERS: Dict[str, Callable[..., Awaitable[Report]]] = {
     "website_audit": run_website_audit,
     "code_review": run_code_review,
+    "app_review": run_app_review,
     "resume_review": partial(run_document_review, flavor="resume"),
     "presentation_review": partial(run_document_review, flavor="presentation"),
     "book_review": partial(run_document_review, flavor="book"),

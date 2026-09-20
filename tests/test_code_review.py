@@ -72,7 +72,7 @@ async def test_collect_code_quality_uses_llm_review(tmp_path, monkeypatch):
         assert response_format is CodeLLMReview
         return LLMResponse(success=True, message="", extra=LLMExtra(parsed_model=review))
 
-    monkeypatch.setattr("src.review.code_review.model_manager", fake_model_manager)
+    monkeypatch.setattr("src.review._code_sampling.model_manager", fake_model_manager)
     pillar = await collect_code_quality(str(tmp_path), model_name="ollama/qwen3-30b")
     assert pillar.score == 8.0
     assert pillar.findings[0].status == Status.OK

@@ -19,6 +19,7 @@ import src.audit.collectors.seo as seo
 import src.audit.collectors.tech_stack as tech_stack
 import src.audit.collectors.ux as ux
 import src.audit.website as website
+import src.review.app_review as app_review
 import src.review.code_review as code_review
 import src.review.document as document
 
@@ -38,6 +39,7 @@ _ALL_CATALOGS = {
     "ux._M": ux._M,
     "website._M": website._M,
     "code_review._M": code_review._M,
+    "app_review._M": app_review._M,
     "document._M": document._M,
 }
 

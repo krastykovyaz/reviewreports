@@ -4,6 +4,7 @@ with read_base():
     from .agents.reviewreports import reviewreports_agent
     from .tools.website_audit import website_audit_tool
     from .tools.code_review import code_review_tool
+    from .tools.app_review import app_review_tool
     from .tools.document_review import document_review_tool
     from .tools.report import report_tool
     from .tools.browser import browser_tool
@@ -33,6 +34,7 @@ tool_names = [
     'todo',
     'website_audit',
     'code_review',
+    'app_review',
     'document_review',
     'report',
     'browser',
@@ -46,6 +48,11 @@ website_audit_tool.update(
 #-----------------CODE REVIEW TOOL CONFIG-----------------
 code_review_tool.update(
     base_dir=f"{workdir}/tool/code_review",
+    model_name=model_name,
+)
+#-----------------APP REVIEW TOOL CONFIG-----------------
+app_review_tool.update(
+    base_dir=f"{workdir}/tool/app_review",
     model_name=model_name,
 )
 #-----------------DOCUMENT REVIEW TOOL CONFIG-----------------

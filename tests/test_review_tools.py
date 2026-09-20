@@ -1,6 +1,7 @@
 import pytest
 
 from src.report.schema import Pillar, Report, ReportMeta
+from src.tool.workflow_tools.app_review import AppReviewTool
 from src.tool.workflow_tools.code_review import CodeReviewTool
 from src.tool.workflow_tools.document_review import DocumentReviewTool
 
@@ -42,6 +43,42 @@ async def test_code_review_tool_reports_failure(tmp_path, monkeypatch):
 async def test_code_review_tool_rejects_unknown_format(tmp_path):
     tool = CodeReviewTool(base_dir=str(tmp_path))
     response = await tool(repo="/some/path", output_format="docx")
+    assert response.success is False
+
+
+# ---- AppReviewTool -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_app_review_tool_writes_markdown(tmp_path, monkeypatch):
+    async def fake_run(app_dir, model_name=None, lang="en"):
+        assert app_dir == "/path/to/generated-app"
+        return _stub_report("app_review", "/path/to/generated-app")
+
+    monkeypatch.setattr("src.tool.workflow_tools.app_review.run_app_review", fake_run)
+    tool = AppReviewTool(base_dir=str(tmp_path))
+    response = await tool(app_dir="/path/to/generated-app")
+
+    assert response.success is True
+    assert response.extra.file_path.endswith(".md")
+
+
+@pytest.mark.asyncio
+async def test_app_review_tool_reports_failure(tmp_path, monkeypatch):
+    async def fake_run(app_dir, model_name=None, lang="en"):
+        raise ValueError("Not a directory: /nope")
+
+    monkeypatch.setattr("src.tool.workflow_tools.app_review.run_app_review", fake_run)
+    tool = AppReviewTool(base_dir=str(tmp_path))
+    response = await tool(app_dir="/nope")
+    assert response.success is False
+    assert "Not a directory" in response.message
+
+
+@pytest.mark.asyncio
+async def test_app_review_tool_rejects_unknown_format(tmp_path):
+    tool = AppReviewTool(base_dir=str(tmp_path))
+    response = await tool(app_dir="/some/path", output_format="docx")
     assert response.success is False
 
 

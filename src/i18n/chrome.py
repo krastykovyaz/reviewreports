@@ -20,6 +20,8 @@ PILLAR_NAMES = {
     "Resume Review": {"en": "Resume Review", "ru": "Резюме: отзыв", "fr": "CV : critique"},
     "Presentation Review": {"en": "Presentation Review", "ru": "Презентация: отзыв", "fr": "Présentation : critique"},
     "Book/Manuscript Review": {"en": "Book/Manuscript Review", "ru": "Книга/рукопись: отзыв", "fr": "Livre/manuscrit : critique"},
+    "App Structure": {"en": "App Structure", "ru": "Структура приложения", "fr": "Structure de l'application"},
+    "Security Hygiene": {"en": "Security Hygiene", "ru": "Гигиена безопасности кода", "fr": "Hygiène de sécurité du code"},
 }
 
 FLAVOR_LABELS = {
@@ -34,6 +36,7 @@ KIND_TITLES = {
     "resume_review": {"en": "Resume Review Report", "ru": "Отчёт о проверке резюме", "fr": "Rapport de révision du CV"},
     "presentation_review": {"en": "Presentation Review Report", "ru": "Отчёт о проверке презентации", "fr": "Rapport de révision de la présentation"},
     "book_review": {"en": "Book Review Report", "ru": "Отчёт о рецензии книги", "fr": "Rapport de critique du livre"},
+    "app_review": {"en": "App Review Report", "ru": "Отчёт о проверке приложения", "fr": "Rapport de revue d'application"},
 }
 
 _CHROME = {
@@ -95,6 +98,7 @@ _CHROME = {
     "ui.download_tex": {"en": "LaTeX", "ru": "LaTeX", "fr": "LaTeX"},
     "ui.kind.website_audit": {"en": "Website audit (URL)", "ru": "Аудит сайта (URL)", "fr": "Audit de site (URL)"},
     "ui.kind.code_review": {"en": "Code review (repo path or git URL)", "ru": "Ревью кода (путь или git-адрес)", "fr": "Revue de code (chemin ou URL git)"},
+    "ui.kind.app_review": {"en": "App review (small app directory path)", "ru": "Проверка приложения (путь к директории)", "fr": "Revue d'application (chemin du dossier)"},
     "ui.kind.resume_review": {"en": "Resume review (upload file)", "ru": "Проверка резюме (загрузить файл)", "fr": "Révision de CV (importer un fichier)"},
     "ui.kind.presentation_review": {"en": "Presentation review (upload file)", "ru": "Проверка презентации (загрузить файл)", "fr": "Révision de présentation (importer un fichier)"},
     "ui.kind.book_review": {"en": "Book / manuscript review (upload file)", "ru": "Рецензия книги / рукописи (загрузить файл)", "fr": "Critique de livre / manuscrit (importer un fichier)"},
