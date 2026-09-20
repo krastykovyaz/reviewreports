@@ -7,6 +7,7 @@
 {% if job.status in ("pending", "running") %}
 <meta http-equiv="refresh" content="2">
 {% endif %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
     color-scheme: light;
@@ -80,6 +81,36 @@
     <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html" title="Report"></iframe>
   {% endif %}
   <script>
+    function escapeHtml(text) {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function renderMarkdownDoc(text) {
+      // Escape first so any raw HTML scraped from the audited site (e.g. a
+      // page title containing "<script>") can never execute here — marked
+      // then only ever sees literal "&lt;script&gt;" text, not a tag.
+      var body = window.marked ? marked.parse(escapeHtml(text)) : '<pre>' + escapeHtml(text) + '</pre>';
+      return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+        'body{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:900px;' +
+        'margin:1.5rem auto;padding:0 1rem;line-height:1.6;color:#1a1a1a;}' +
+        'h1,h2,h3{margin-top:1.5rem;margin-bottom:0.4rem;}' +
+        'table{border-collapse:collapse;width:100%;margin:1rem 0;}' +
+        'th,td{text-align:left;padding:0.5rem 0.75rem;border-bottom:1px solid #e5e5e5;vertical-align:top;}' +
+        'th{font-weight:600;}' +
+        'code{background:#f7f7f7;padding:1px 5px;border-radius:4px;font-family:"SF Mono",monospace;font-size:0.9em;}' +
+        'pre code{display:block;padding:12px;overflow:auto;}' +
+        'hr{border:none;border-top:1px solid #e5e5e5;margin:1.5rem 0;}' +
+        '</style></head><body>' + body + '</body></html>';
+    }
+    function renderTexDoc(text) {
+      var esc = escapeHtml(text)
+        .replace(/(%.*)$/gm, '<span style="color:#6e7781">$1</span>')
+        .replace(/(\\[a-zA-Z]+)/g, '<span style="color:#0550ae">$1</span>');
+      return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+        'body{margin:0;padding:16px;white-space:pre-wrap;word-wrap:break-word;' +
+        'font-family:"SF Mono","Fira Code","Cascadia Code",monospace;font-size:13px;' +
+        'line-height:1.6;color:#1a1a1a;background:#fff;}</style></head>' +
+        '<body>' + esc + '</body></html>';
+    }
     function showFormat(btn) {
       document.querySelectorAll('.fmt-btn').forEach(function (b) { b.classList.remove('active'); });
       btn.classList.add('active');
@@ -92,13 +123,8 @@
         return;
       }
       fetch(url).then(function (r) { return r.text(); }).then(function (text) {
-        var esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         frame.removeAttribute('src');
-        frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
-          'body{margin:0;padding:16px;white-space:pre-wrap;word-wrap:break-word;' +
-          'font-family:"SF Mono","Fira Code","Cascadia Code",monospace;font-size:13px;' +
-          'line-height:1.5;color:#1a1a1a;background:#fff;}</style></head>' +
-          '<body>' + esc + '</body></html>';
+        frame.srcdoc = ext === 'md' ? renderMarkdownDoc(text) : renderTexDoc(text);
       }).catch(function () {});
     }
     function copyFixPrompt(btn) {
