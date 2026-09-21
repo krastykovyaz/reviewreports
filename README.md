@@ -1,9 +1,9 @@
 # reviewreports
 
 An agent framework and service for generating structured **review reports**:
-website audits, code reviews, and document reviews (resumes, presentations,
-books/manuscripts) — one shared schema, one scoring model, three output
-formats (Markdown/HTML/PDF/LaTeX), and full en/ru/fr localization.
+website audits, code reviews, app reviews, and document reviews (resumes,
+presentations, books/manuscripts) — one shared schema, one scoring model,
+three output formats (Markdown/HTML/PDF/LaTeX), and full en/ru/fr localization.
 
 The repo began as an ESG (Environmental, Social, Governance) analysis agent.
 That agent, its retrieval tools, and the ESG benchmark dataset still exist
@@ -19,7 +19,13 @@ Submit a URL, a code repository, or a document, and get back a scored report:
   (the observed value) and fix guidance. Content tone/clarity and Design & UX
   add an LLM judgment pass when a model is configured.
 - **Code review** — repository structure (README/LICENSE/tests/CI, language
-  breakdown) plus an LLM review of the largest sampled source files.
+  breakdown) plus an LLM review of the largest sampled source files. Aimed at
+  OSS-style repositories.
+- **App review** — for a small generated app (static site, Flask, or
+  FastAPI) rather than an OSS repo: detected stack + entry-point check
+  instead of README/LICENSE/tests/CI, a security-hygiene scan (hardcoded
+  secrets, `debug=True`, wildcard CORS, a committed `.env`), plus the same
+  LLM code-quality pass as code review.
 - **Document review** — resume, presentation, or book/manuscript, via
   `markitdown` text extraction and a flavor-specific LLM rubric.
 
@@ -29,8 +35,9 @@ Two ways in:
   the rendered report.
 - **Web UI**: a submit → progress → report flow with a kind selector and
   file upload, fully localized (`GET /?lang=ru`).
-- **Agent tools**: `website_audit`, `code_review`, `document_review` are
-  registered tools usable by the agent loop (`configs/reviewreports.py`).
+- **Agent tools**: `website_audit`, `code_review`, `app_review`,
+  `document_review` are registered tools usable by the agent loop
+  (`configs/reviewreports.py`).
 
 ## Project structure
 
@@ -39,7 +46,7 @@ reviewreports/
 ├── src/
 │   ├── audit/                  # Website audit: collectors + orchestrator
 │   │   └── collectors/         # SEO, security, a11y, performance, privacy, links, tech stack, content, UX
-│   ├── review/                 # Code review, document review, kind dispatcher
+│   ├── review/                 # Code review, app review, document review, kind dispatcher
 │   ├── report/                 # Shared Report schema + Markdown/HTML/LaTeX/PDF renderers
 │   ├── i18n/                   # en/ru/fr message catalogs (per-collector + chrome/UI)
 │   ├── service/                # FastAPI app, job store (SQLite), web templates
