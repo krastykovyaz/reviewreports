@@ -30,6 +30,13 @@ _TEMPLATE_SRC = """\
   .section-title { margin-top: 2rem; }
   ol.recommendations li { margin-bottom: 0.5rem; }
   .small { font-size: 0.9rem; color: var(--na); }
+  .tsech-footer {
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line);
+    font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+    font-size: 12px; color: #4a4a4a; text-decoration: none;
+  }
+  .tsech-footer strong { color: #1a1a1a; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -102,6 +109,10 @@ _TEMPLATE_SRC = """\
   <h2 class="section-title">{{ t('report.limitations') }}</h2>
   <p class="small">{{ report.limitations }}</p>
   {% endif %}
+
+  <a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">
+    <span>{{ t('ui.create_with') }}</span><strong>tsech.online</strong>
+  </a>
 </body>
 </html>
 """

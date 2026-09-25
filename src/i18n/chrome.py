@@ -96,6 +96,7 @@ _CHROME = {
     "ui.fix_prompt": {"en": "Copy fix prompt", "ru": "Скопировать промпт для исправлений", "fr": "Copier le prompt de correction"},
     "ui.copied": {"en": "Copied", "ru": "Скопировано", "fr": "Copié"},
     "ui.fix_prompt_header": {"en": "Fix these issues found on", "ru": "Исправь эти проблемы, найденные на", "fr": "Corrige ces problèmes trouvés sur"},
+    "ui.create_with": {"en": "Create with", "ru": "Создать с", "fr": "Créer avec"},
     "ui.kind.website_audit": {"en": "Website audit (URL)", "ru": "Аудит сайта (URL)", "fr": "Audit de site (URL)"},
     "ui.kind.code_review": {"en": "Code review (repo path or git URL)", "ru": "Ревью кода (путь или git-адрес)", "fr": "Revue de code (chemin ou URL git)"},
     "ui.kind.resume_review": {"en": "Resume review (upload file)", "ru": "Проверка резюме (загрузить файл)", "fr": "Révision de CV (importer un fichier)"},
