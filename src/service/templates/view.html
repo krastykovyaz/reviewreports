@@ -2,8 +2,18 @@
 <html lang="{{ lang }}">
 <head>
 <meta charset="utf-8">
-<title>{% if job.status == "done" %}{{ t('ui.ready_title') }}{% else %}{{ t('ui.generating_title') }}{% endif %}</title>
+<title>{{ meta_title }}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tsech">
+<meta property="og:title" content="{{ meta_title }}">
+<meta property="og:description" content="{{ meta_description }}">
+<meta property="og:image" content="https://tsech.online/logo.png">
+<meta property="og:url" content="https://tsech.online/audit/view/{{ job.id }}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ meta_title }}">
+<meta name="twitter:description" content="{{ meta_description }}">
+<meta name="twitter:image" content="https://tsech.online/logo.png">
 {% if job.status in ("pending", "running") %}
 <meta http-equiv="refresh" content="2">
 {% endif %}

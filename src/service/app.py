@@ -210,6 +210,21 @@ def _build_fix_prompt(subject: str, report: Optional[dict], lang: str) -> Option
     return f"{header} {subject}:\n\n" + "\n\n".join(lines)
 
 
+def _build_share_meta(job: dict, report: Optional[dict], lang: str) -> tuple[str, str]:
+    """og:title / og:description для превью ссылки в Telegram/WhatsApp — без
+    этого мессенджеры показывали пустую карточку без текста и картинки."""
+    kind_label = t_chrome(_KIND_LABEL_KEYS.get(job["kind"], "ui.kind.website_audit"), lang)
+    title = f"{kind_label} — {job['subject']}"
+    if job["status"] == "failed":
+        return title, t_chrome("ui.failed_title", lang)
+    if not report:
+        return title, t_chrome("ui.generating_title", lang)
+    score = report.get("overall_score")
+    verdict = report.get("verdict") or ""
+    description = f"{score}/10 — {verdict}" if score is not None else (verdict or t_chrome("ui.ready_title", lang))
+    return title, description
+
+
 @app.get("/view/{job_id}", response_class=HTMLResponse)
 async def view_report(request: Request, job_id: str):
     job = await _store.get_job(job_id)
@@ -218,4 +233,9 @@ async def view_report(request: Request, job_id: str):
     lang = normalize_lang(job["lang"])
     report = json.loads(job["report_json"]) if job["report_json"] else None
     fix_prompt = _build_fix_prompt(job["subject"], report, lang)
-    return _templates.TemplateResponse(request, "view.html", {"job": job, "report": report, "fix_prompt": fix_prompt, "lang": lang, "t": lambda key, **kw: t_chrome(key, lang, **kw)})
+    meta_title, meta_description = _build_share_meta(job, report, lang)
+    return _templates.TemplateResponse(request, "view.html", {
+        "job": job, "report": report, "fix_prompt": fix_prompt, "lang": lang,
+        "meta_title": meta_title, "meta_description": meta_description,
+        "t": lambda key, **kw: t_chrome(key, lang, **kw),
+    })
