@@ -2,7 +2,7 @@ from src.report.render.html import render_html
 from src.report.schema import Report
 
 
-def render_pdf(report: Report) -> bytes:
+def render_pdf(report: Report, include_footer: bool = True) -> bytes:
     """Render the report to PDF bytes by feeding the existing HTML template
     through WeasyPrint, rather than maintaining a separate PDF template.
 
@@ -12,5 +12,5 @@ def render_pdf(report: Report) -> bytes:
     """
     from weasyprint import HTML
 
-    html = render_html(report)
+    html = render_html(report, include_footer=include_footer)
     return HTML(string=html).write_pdf()

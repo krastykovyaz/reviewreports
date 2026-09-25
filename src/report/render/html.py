@@ -110,9 +110,11 @@ _TEMPLATE_SRC = """\
   <p class="small">{{ report.limitations }}</p>
   {% endif %}
 
+  {% if include_footer %}
   <a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">
     <span>{{ t('ui.create_with') }}</span><strong>tsech.online</strong>
   </a>
+  {% endif %}
 </body>
 </html>
 """
@@ -121,7 +123,10 @@ _env = Environment(autoescape=select_autoescape(["html"]))
 _template = _env.from_string(_TEMPLATE_SRC)
 
 
-def render_html(report: Report) -> str:
+def render_html(report: Report, include_footer: bool = True) -> str:
+    """include_footer=False is used when the report is embedded in a page
+    that already shows its own single, page-level "Create with tsech.online"
+    footer (e.g. reviewreports' own /view/{id}) — avoids showing it twice."""
     lang = report.meta.lang
     grade = report.grade if report.grade != "N/A" else t_chrome("report.na_value", lang)
     return _template.render(
@@ -133,4 +138,5 @@ def render_html(report: Report) -> str:
         t=lambda key, **kw: t_chrome(key, lang, **kw),
         status_label=lambda s: t_chrome(f"status.{s.value}", lang),
         score=lambda s: f"{s}/10" if s is not None else t_chrome("report.na_value", lang),
+        include_footer=include_footer,
     )

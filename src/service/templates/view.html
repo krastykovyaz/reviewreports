@@ -67,6 +67,13 @@
     padding: 6px 12px;
   }
   .fix-prompt-btn:hover { border-color: #999; color: var(--text); }
+  .tsech-footer {
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text2); text-decoration: none;
+  }
+  .tsech-footer:hover { color: var(--text); }
+  .tsech-footer strong { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -88,8 +95,11 @@
       <button class="fix-prompt-btn" data-prompt="{{ fix_prompt }}" onclick="copyFixPrompt(this)">{{ t('ui.fix_prompt') }}</button>
       {% endif %}
     </p>
-    <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html" title="Report"></iframe>
+    <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html?footer=0" title="Report"></iframe>
   {% endif %}
+  <a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">
+    <span>{{ t('ui.create_with') }}</span><strong>tsech.online</strong>
+  </a>
   <script>
     function escapeHtml(text) {
       return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -110,14 +120,7 @@
         'pre code{display:block;padding:12px;overflow:auto;}' +
         'hr{border:none;border-top:1px solid #e5e5e5;margin:1.5rem 0;}' +
         'a{color:#0066ff;text-decoration:none;}a:hover{text-decoration:underline;}' +
-        '.tsech-footer{display:flex;align-items:center;justify-content:center;gap:5px;' +
-        'margin-top:2rem;padding-top:1rem;border-top:1px solid #e5e5e5;' +
-        'font-family:-apple-system,sans-serif;font-size:12px;color:#4a4a4a;text-decoration:none;}' +
-        '.tsech-footer strong{color:#1a1a1a;font-weight:600;}' +
-        '</style></head><body>' + body +
-        '<a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">' +
-        '<span>' + {{ t('ui.create_with')|tojson }} + '</span><strong>tsech.online</strong></a>' +
-        '</body></html>';
+        '</style></head><body>' + body + '</body></html>';
     }
     function showFormat(btn) {
       document.querySelectorAll('.fmt-btn').forEach(function (b) { b.classList.remove('active'); });
@@ -126,14 +129,14 @@
       var ext = btn.dataset.ext;
       if (ext === 'html') {
         frame.removeAttribute('srcdoc');
-        frame.src = "/audit/reports/{{ job.id }}.html";
+        frame.src = "/audit/reports/{{ job.id }}.html?footer=0";
         return;
       }
       if (ext === 'tex') {
         // LaTeX source only matters once compiled — show the actual
         // compiled PDF (same content) rather than raw .tex markup.
         frame.removeAttribute('srcdoc');
-        frame.src = "/audit/reports/{{ job.id }}.pdf";
+        frame.src = "/audit/reports/{{ job.id }}.pdf?footer=0";
         return;
       }
       fetch("/audit/reports/{{ job.id }}." + ext).then(function (r) { return r.text(); }).then(function (text) {

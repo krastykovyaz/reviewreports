@@ -113,10 +113,15 @@ async def create_report(request: CreateReportRequest, background_tasks: Backgrou
 
 
 @app.get("/reports/{job_id}.{extension}")
-async def get_report_rendered(job_id: str, extension: str):
+async def get_report_rendered(job_id: str, extension: str, footer: str = "1"):
     # Registered before /reports/{job_id}: Starlette's {job_id} path converter
     # matches dots too, so a more general route registered first would swallow
     # "abc123.md" whole as job_id and never reach this handler.
+    #
+    # footer=0 is used when this is embedded in a page that already shows its
+    # own page-level "Create with tsech.online" footer (reviewreports' own
+    # /view/{id}) — everywhere else (direct downloads, tsech's own embedded
+    # preview) defaults to footer=1 so the branding still shows up there.
     output_format = _EXTENSION_TO_FORMAT.get(extension)
     if output_format is None:
         raise HTTPException(status_code=400, detail=f"Unsupported extension '.{extension}'. Use .md, .html, .tex, or .pdf.")
@@ -131,7 +136,7 @@ async def get_report_rendered(job_id: str, extension: str):
 
     report = Report.model_validate(json.loads(job["report_json"]))
     try:
-        rendered = RENDERERS[output_format](report)
+        rendered = RENDERERS[output_format](report, include_footer=footer != "0")
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
 
