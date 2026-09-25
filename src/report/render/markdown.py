@@ -55,4 +55,6 @@ def render_markdown(report: Report) -> str:
     if report.limitations:
         lines += [f"## {t_chrome('report.limitations', lang)}", "", report.limitations, ""]
 
+    lines += ["---", "", f"{t_chrome('ui.create_with', lang)} [tsech.online](https://tsech.online)", ""]
+
     return "\n".join(lines).rstrip() + "\n"

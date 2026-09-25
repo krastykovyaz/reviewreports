@@ -121,5 +121,9 @@ def render_latex(report: Report) -> str:
     if report.limitations:
         parts += [rf"\section*{{{escape_latex(t_chrome('report.limitations', lang))}}}", rf"\small\textcolor{{headergray}}{{{escape_latex(report.limitations)}}}"]
 
+    parts.append(
+        r"\begin{center}\small\textcolor{headergray}{%s} \textbf{\href{https://tsech.online}{tsech.online}}\end{center}"
+        % escape_latex(t_chrome("ui.create_with", lang))
+    )
     parts.append(r"\end{document}")
     return "\n\n".join(parts) + "\n"
