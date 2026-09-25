@@ -93,7 +93,7 @@ _CHROME = {
     "ui.download_md": {"en": "Markdown", "ru": "Markdown", "fr": "Markdown"},
     "ui.download_html": {"en": "HTML", "ru": "HTML", "fr": "HTML"},
     "ui.download_tex": {"en": "LaTeX", "ru": "LaTeX", "fr": "LaTeX"},
-    "ui.fix_prompt": {"en": "Copy fix prompt", "ru": "Скопировать промпт для исправлений", "fr": "Copier le prompt de correction"},
+    "ui.fix_prompt": {"en": "Prompt for fix", "ru": "Промпт для исправлений", "fr": "Prompt de correction"},
     "ui.copied": {"en": "Copied", "ru": "Скопировано", "fr": "Copié"},
     "ui.fix_prompt_header": {"en": "Fix these issues found on", "ru": "Исправь эти проблемы, найденные на", "fr": "Corrige ces problèmes trouvés sur"},
     "ui.create_with": {"en": "Create with", "ru": "Создать с", "fr": "Créer avec"},

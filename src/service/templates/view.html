@@ -87,7 +87,7 @@
       <button class="fmt-btn active" data-ext="html" onclick="showFormat(this)">{{ t('ui.download_html') }}</button>
       <button class="fmt-btn" data-ext="tex" onclick="showFormat(this)">{{ t('ui.download_tex') }}</button>
       {% if fix_prompt %}
-      <button class="fmt-btn" data-ext="prompt" data-prompt="{{ fix_prompt }}" data-label="{{ t('ui.fix_prompt') }}" onclick="showFormat(this)">{{ t('ui.fix_prompt') }}</button>
+      <button class="fmt-btn" data-ext="prompt" data-prompt="{{ fix_prompt }}" onclick="showFormat(this)">{{ t('ui.fix_prompt') }}</button>
       {% endif %}
     </p>
     <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html?footer=0" title="Report"></iframe>
@@ -142,37 +142,14 @@
         return;
       }
       if (ext === 'prompt') {
-        // Show the prompt itself (not just a silent clipboard copy), and
-        // still copy it so it's ready to paste elsewhere.
         frame.removeAttribute('src');
         frame.srcdoc = renderPromptDoc(btn.dataset.prompt);
-        copyToClipboard(btn.dataset.prompt, function () {
-          var original = btn.dataset.label;
-          btn.textContent = {{ t('ui.copied')|tojson }};
-          setTimeout(function () { btn.textContent = original; }, 2000);
-        });
         return;
       }
       fetch("/audit/reports/{{ job.id }}." + ext).then(function (r) { return r.text(); }).then(function (text) {
         frame.removeAttribute('src');
         frame.srcdoc = renderMarkdownDoc(text);
       }).catch(function () {});
-    }
-    function copyToClipboard(text, done) {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
-      } else {
-        fallbackCopy(text, done);
-      }
-    }
-    function fallbackCopy(text, done) {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
-      document.body.appendChild(ta);
-      ta.focus(); ta.select();
-      try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy:', text); }
-      document.body.removeChild(ta);
     }
   </script>
 </body>
