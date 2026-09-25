@@ -56,10 +56,20 @@
     animation: spin 0.8s linear infinite; margin: 1rem 0;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .frame-wrap { position: relative; }
   iframe {
     width: 100%; height: calc(80vh - 44px); border: 1px solid var(--border);
-    border-radius: var(--radius); background: var(--bg);
+    border-radius: var(--radius); background: var(--bg); display: block;
   }
+  .frame-toolbar { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; }
+  .frame-toolbar button {
+    display: flex; align-items: center; gap: 5px;
+    font-family: var(--font); font-size: 12px; color: var(--text2); cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 5px 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .frame-toolbar button:hover { border-color: #999; color: var(--text); }
+  .frame-toolbar svg { flex-shrink: 0; }
   .error-box { color: #dc2626; white-space: pre-wrap; font-size: 13px; }
   .tsech-footer {
     position: fixed; bottom: 0; left: 0; right: 0;
@@ -90,7 +100,19 @@
       <button class="fmt-btn" data-ext="prompt" data-prompt="{{ fix_prompt }}" onclick="showFormat(this)">{{ t('ui.fix_prompt') }}</button>
       {% endif %}
     </p>
-    <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html?footer=0" title="Report"></iframe>
+    <div class="frame-wrap">
+      <iframe id="reportFrame" title="Report"></iframe>
+      <div class="frame-toolbar">
+        <button onclick="copyCurrent()">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor"/><path d="M3.5 10.5V3.5C3.5 2.94772 3.94772 2.5 4.5 2.5H10.5" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span id="copyLabel">{{ t('ui.copy') }}</span>
+        </button>
+        <button onclick="downloadCurrent()">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2V10M8 10L5 7M8 10L11 7" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 11.5V12.5C2.5 13.0523 2.94772 13.5 3.5 13.5H12.5C13.0523 13.5 13.5 13.0523 13.5 12.5V11.5" stroke="currentColor" stroke-linecap="round"/></svg>
+          <span>{{ t('ui.download') }}</span>
+        </button>
+      </div>
+    </div>
   {% endif %}
   <a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">
     <span>{{ t('ui.create_with') }}</span><strong>tsech.online</strong>
@@ -124,33 +146,83 @@
         'line-height:1.6;color:#1a1a1a;background:#fff;}</style></head>' +
         '<body>' + escapeHtml(text) + '</body></html>';
     }
+    var FILE_META = {
+      html: { filename: 'report.html', mime: 'text/html' },
+      md: { filename: 'report.md', mime: 'text/markdown' },
+      tex: { filename: 'report.tex', mime: 'text/x-tex' },
+      prompt: { filename: 'prompt.txt', mime: 'text/plain' },
+    };
+    var current = { ext: null, text: '' };
+
     function showFormat(btn) {
       document.querySelectorAll('.fmt-btn').forEach(function (b) { b.classList.remove('active'); });
       btn.classList.add('active');
       var frame = document.getElementById('reportFrame');
       var ext = btn.dataset.ext;
-      if (ext === 'html') {
-        frame.removeAttribute('srcdoc');
-        frame.src = "/audit/reports/{{ job.id }}.html?footer=0";
+      current.ext = ext;
+      current.text = '';
+
+      if (ext === 'prompt') {
+        current.text = btn.dataset.prompt;
+        frame.removeAttribute('src');
+        frame.srcdoc = renderPromptDoc(current.text);
         return;
       }
       if (ext === 'tex') {
-        // LaTeX source only matters once compiled — show the actual
-        // compiled PDF (same content) rather than raw .tex markup.
+        // Preview shows the compiled PDF (readable); Copy/Download still
+        // operate on the raw .tex source, which is what "LaTeX" as a
+        // downloadable format actually means.
         frame.removeAttribute('srcdoc');
         frame.src = "/audit/reports/{{ job.id }}.pdf?footer=0";
+        fetch("/audit/reports/{{ job.id }}.tex").then(function (r) { return r.text(); })
+          .then(function (text) { current.text = text; }).catch(function () {});
         return;
       }
-      if (ext === 'prompt') {
-        frame.removeAttribute('src');
-        frame.srcdoc = renderPromptDoc(btn.dataset.prompt);
-        return;
-      }
-      fetch("/audit/reports/{{ job.id }}." + ext).then(function (r) { return r.text(); }).then(function (text) {
-        frame.removeAttribute('src');
-        frame.srcdoc = renderMarkdownDoc(text);
-      }).catch(function () {});
+      fetch("/audit/reports/{{ job.id }}." + ext + (ext === 'html' ? '?footer=0' : ''))
+        .then(function (r) { return r.text(); })
+        .then(function (text) {
+          current.text = text;
+          frame.removeAttribute('src');
+          frame.srcdoc = ext === 'html' ? text : renderMarkdownDoc(text);
+        }).catch(function () {});
     }
+
+    function copyCurrent() {
+      if (!current.text) return;
+      var label = document.getElementById('copyLabel');
+      var original = label.textContent;
+      var done = function () {
+        label.textContent = {{ t('ui.copied')|tojson }};
+        setTimeout(function () { label.textContent = original; }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(current.text).then(done).catch(function () { fallbackCopy(current.text, done); });
+      } else {
+        fallbackCopy(current.text, done);
+      }
+    }
+    function fallbackCopy(text, done) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy:', text); }
+      document.body.removeChild(ta);
+    }
+    function downloadCurrent() {
+      if (!current.text || !current.ext) return;
+      var meta = FILE_META[current.ext];
+      var blob = new Blob([current.text], { type: meta.mime });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = meta.filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    var initialBtn = document.querySelector('.fmt-btn.active');
+    if (initialBtn) showFormat(initialBtn);
   </script>
 </body>
 </html>

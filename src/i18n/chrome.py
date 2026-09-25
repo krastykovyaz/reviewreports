@@ -95,6 +95,8 @@ _CHROME = {
     "ui.download_tex": {"en": "LaTeX", "ru": "LaTeX", "fr": "LaTeX"},
     "ui.fix_prompt": {"en": "Prompt for fix", "ru": "Промпт для исправлений", "fr": "Prompt de correction"},
     "ui.copied": {"en": "Copied", "ru": "Скопировано", "fr": "Copié"},
+    "ui.copy": {"en": "Copy", "ru": "Копировать", "fr": "Copier"},
+    "ui.download": {"en": "Download", "ru": "Скачать", "fr": "Télécharger"},
     "ui.fix_prompt_header": {"en": "Fix these issues found on", "ru": "Исправь эти проблемы, найденные на", "fr": "Corrige ces problèmes trouvés sur"},
     "ui.create_with": {"en": "Create with", "ru": "Создать с", "fr": "Créer avec"},
     "ui.kind.website_audit": {"en": "Website audit (URL)", "ru": "Аудит сайта (URL)", "fr": "Audit de site (URL)"},
