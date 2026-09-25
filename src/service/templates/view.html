@@ -61,12 +61,6 @@
     border-radius: var(--radius); background: var(--bg);
   }
   .error-box { color: #dc2626; white-space: pre-wrap; font-size: 13px; }
-  .fix-prompt-btn {
-    font-family: var(--font); font-size: 13px; color: var(--text2); cursor: pointer;
-    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
-    padding: 6px 12px;
-  }
-  .fix-prompt-btn:hover { border-color: #999; color: var(--text); }
   .tsech-footer {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -93,7 +87,7 @@
       <button class="fmt-btn active" data-ext="html" onclick="showFormat(this)">{{ t('ui.download_html') }}</button>
       <button class="fmt-btn" data-ext="tex" onclick="showFormat(this)">{{ t('ui.download_tex') }}</button>
       {% if fix_prompt %}
-      <button class="fix-prompt-btn" data-prompt="{{ fix_prompt }}" onclick="copyFixPrompt(this)">{{ t('ui.fix_prompt') }}</button>
+      <button class="fmt-btn" data-ext="prompt" data-prompt="{{ fix_prompt }}" data-label="{{ t('ui.fix_prompt') }}" onclick="showFormat(this)">{{ t('ui.fix_prompt') }}</button>
       {% endif %}
     </p>
     <iframe id="reportFrame" src="/audit/reports/{{ job.id }}.html?footer=0" title="Report"></iframe>
@@ -123,6 +117,13 @@
         'a{color:#0066ff;text-decoration:none;}a:hover{text-decoration:underline;}' +
         '</style></head><body>' + body + '</body></html>';
     }
+    function renderPromptDoc(text) {
+      return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+        'body{margin:0;padding:16px;white-space:pre-wrap;word-wrap:break-word;' +
+        'font-family:"SF Mono","Fira Code","Cascadia Code",monospace;font-size:13px;' +
+        'line-height:1.6;color:#1a1a1a;background:#fff;}</style></head>' +
+        '<body>' + escapeHtml(text) + '</body></html>';
+    }
     function showFormat(btn) {
       document.querySelectorAll('.fmt-btn').forEach(function (b) { b.classList.remove('active'); });
       btn.classList.add('active');
@@ -140,18 +141,24 @@
         frame.src = "/audit/reports/{{ job.id }}.pdf?footer=0";
         return;
       }
+      if (ext === 'prompt') {
+        // Show the prompt itself (not just a silent clipboard copy), and
+        // still copy it so it's ready to paste elsewhere.
+        frame.removeAttribute('src');
+        frame.srcdoc = renderPromptDoc(btn.dataset.prompt);
+        copyToClipboard(btn.dataset.prompt, function () {
+          var original = btn.dataset.label;
+          btn.textContent = {{ t('ui.copied')|tojson }};
+          setTimeout(function () { btn.textContent = original; }, 2000);
+        });
+        return;
+      }
       fetch("/audit/reports/{{ job.id }}." + ext).then(function (r) { return r.text(); }).then(function (text) {
         frame.removeAttribute('src');
         frame.srcdoc = renderMarkdownDoc(text);
       }).catch(function () {});
     }
-    function copyFixPrompt(btn) {
-      var text = btn.dataset.prompt;
-      var original = btn.textContent;
-      var done = function () {
-        btn.textContent = {{ t('ui.copied')|tojson }};
-        setTimeout(function () { btn.textContent = original; }, 2000);
-      };
+    function copyToClipboard(text, done) {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
       } else {
