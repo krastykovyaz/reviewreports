@@ -61,7 +61,7 @@ def test_submit_url_kind_redirects_to_view(client):
 def test_submit_then_view_shows_finished_report(client):
     resp = client.post("/submit", data={"kind": "website_audit", "input_value": "https://example.com"}, follow_redirects=True)
     assert resp.status_code == 200
-    assert "Report ready" in resp.text
+    assert 'id="reportFrame"' in resp.text  # the report viewer only renders once the job is done
     assert "Download PDF" in resp.text
     assert "/reports/" in resp.text and ".pdf" in resp.text
 
@@ -70,7 +70,7 @@ def test_submit_with_lang_persists_and_localizes_view_and_report(client):
     resp = client.post("/submit", data={"kind": "website_audit", "input_value": "https://example.com", "lang": "fr"}, follow_redirects=True)
     assert resp.status_code == 200
     assert '<html lang="fr">' in resp.text
-    assert "Rapport prêt" in resp.text  # ui.ready_title
+    assert "Audit de site (URL)" in resp.text  # localized meta title (ui.kind.website_audit)
     assert "Télécharger le PDF" in resp.text  # ui.download_pdf
 
     job_id = resp.url.path.split("/view/")[1]
@@ -156,7 +156,7 @@ def test_get_rendered_pdf(client, monkeypatch):
     # Mocks the renderer itself (rather than requiring weasyprint's system
     # libs in every test environment) to verify the endpoint's own plumbing:
     # binary response, correct media type, ImportError -> 503.
-    monkeypatch.setitem(app_module.RENDERERS, "pdf", lambda report: b"%PDF-1.7 fake pdf bytes")
+    monkeypatch.setitem(app_module.RENDERERS, "pdf", lambda report, include_footer=True: b"%PDF-1.7 fake pdf bytes")
     job_id = client.post("/reports", json={"url": "https://example.com"}).json()["id"]
     resp = client.get(f"/reports/{job_id}.pdf")
     assert resp.status_code == 200
@@ -165,7 +165,7 @@ def test_get_rendered_pdf(client, monkeypatch):
 
 
 def test_get_rendered_pdf_unavailable_is_503(client, monkeypatch):
-    def raise_import_error(report):
+    def raise_import_error(report, include_footer=True):
         raise ImportError("cannot load library 'libgobject-2.0-0'")
 
     monkeypatch.setitem(app_module.RENDERERS, "pdf", raise_import_error)

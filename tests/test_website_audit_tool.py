@@ -1,5 +1,10 @@
 import pytest
 
+# The agent-tool wrappers register with mmengine's Registry at class-definition
+# time, and mmengine isn't part of the website_audit-only install. The deployed
+# service calls src.audit.website directly and never goes through this wrapper.
+pytest.importorskip("mmengine", reason="agent-tool wrappers need mmengine (full install); the service path is tested elsewhere")
+
 from src.report.schema import Pillar, Report, ReportMeta
 from src.tool.workflow_tools.website_audit import WebsiteAuditTool
 

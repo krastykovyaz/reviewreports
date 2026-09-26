@@ -1,5 +1,9 @@
 import pytest
 
+# The agent-tool wrappers register with mmengine's Registry at class-definition
+# time, and mmengine isn't part of the website_audit-only install.
+pytest.importorskip("mmengine", reason="agent-tool wrappers need mmengine (full install)")
+
 from src.report.schema import Pillar, Report, ReportMeta
 from src.tool.workflow_tools.code_review import CodeReviewTool
 from src.tool.workflow_tools.document_review import DocumentReviewTool
