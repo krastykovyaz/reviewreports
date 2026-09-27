@@ -52,3 +52,10 @@ langchain-core>=0.3.0  # only for the type/message classes in
 # Needs system libs libpango-1.0-0, libpangocairo-1.0-0, libgdk-pixbuf-2.0-0,
 # libcairo2 (already present on Ubuntu 24.04's default image).
 weasyprint>=60.0
+
+# src.model's OpenAI-protocol client (ChatOpenAI), which the DeepSeek models
+# reuse. Needed by the CV builder's "paste your info" extraction
+# (POST /cv/from-text) and by the audit's LLM-judged pillars whenever a
+# model_name is passed; without it those fail at call time with
+# "openai package is required". Register a key via DEEPSEEK_API_KEY.
+openai>=1.0

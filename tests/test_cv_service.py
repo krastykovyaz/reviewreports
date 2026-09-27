@@ -291,3 +291,57 @@ def test_from_text_shows_error_on_extraction_failure(client, monkeypatch):
 def test_from_text_requires_text(client):
     resp = client.post("/cv-builder/from-text", data={})
     assert resp.status_code == 422
+
+
+# ---- JSON counterpart (POST /cv/from-text), used by tsech's "Create CV" mode ----
+
+
+def test_cv_from_text_json_creates_and_stores(client, monkeypatch):
+    async def fake_extract(text, model_name):
+        assert model_name == "deepseek/deepseek-chat"
+        return CVProfile(name="Jordan Reyes", role="Senior Backend Engineer", contact=Contact(email="jordan.reyes@email.com"), skills=["Python"])
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv/from-text", json={"text": "Jordan Reyes is a senior backend engineer..."})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["template"] == "modern"
+    assert body["profile"]["name"] == "Jordan Reyes"
+    assert client.get(f"/cv/{body['id']}").json()["profile"]["contact"]["email"] == "jordan.reyes@email.com"
+
+
+def test_cv_from_text_json_forwards_model_and_template(client, monkeypatch):
+    async def fake_extract(text, model_name):
+        assert model_name == "openai/gpt-4o"
+        return CVProfile(name="Alex Kim", contact=Contact(email="alex@example.com"))
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv/from-text", json={"text": "some bio", "model_name": "openai/gpt-4o", "template": "compact"})
+    assert resp.status_code == 200
+    assert resp.json()["template"] == "compact"
+
+
+def test_cv_from_text_json_extraction_failure_is_422(client, monkeypatch):
+    async def fake_extract(text, model_name):
+        return None
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv/from-text", json={"text": "unparseable garbage"})
+    assert resp.status_code == 422
+
+
+def test_cv_from_text_json_rejects_blank_text_without_calling_the_model(client, monkeypatch):
+    called = []
+
+    async def fake_extract(text, model_name):
+        called.append(text)
+        return CVProfile(name="X", contact=Contact(email="x@example.com"))
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    assert client.post("/cv/from-text", json={"text": "   "}).status_code == 422
+    assert called == []
+
+
+def test_cv_from_text_json_rejects_unknown_template(client):
+    resp = client.post("/cv/from-text", json={"text": "some bio", "template": "brutalist"})
+    assert resp.status_code == 400

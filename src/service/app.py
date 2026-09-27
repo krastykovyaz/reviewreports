@@ -200,6 +200,31 @@ async def create_cv(request: CreateCVRequest):
     return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
 
 
+class CreateCVFromTextRequest(BaseModel):
+    text: str
+    model_name: Optional[str] = None
+    template: str = "modern"
+
+
+@app.post("/cv/from-text", response_model=CVResponse)
+async def create_cv_from_text(request: CreateCVFromTextRequest):
+    """JSON counterpart of the /cv-builder/from-text form flow, for clients
+    that render the result themselves (tsech's "Create CV" mode): free text
+    in, an extracted-and-stored CV out, same shape as POST /cv."""
+    if request.template not in CV_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template '{request.template}'. Must be one of {CV_TEMPLATES}.")
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text is empty")
+
+    profile = await extract_cv_profile(text, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+    if profile is None:
+        raise HTTPException(status_code=422, detail="Could not extract a CV from that text")
+
+    cv_id = await _cv_store.create(profile, request.template)
+    return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
+
+
 @app.get("/cv/{cv_id}.{extension}")
 async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = None):
     # Registered before /cv/{cv_id}, same reason as /reports/{job_id}.{extension}

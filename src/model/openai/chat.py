@@ -56,6 +56,9 @@ class ChatOpenAI(BaseModel):
     top_p: Optional[float] = None
     max_completion_tokens: Optional[int] = 16384
     plugins: Optional[List[Dict[str, Any]]] = None
+    # False for OpenAI-compatible providers that reject response_format=json_schema
+    # (DeepSeek: 400 "This response_format type is unavailable"); see _build_params.
+    supports_json_schema: bool = True
     
     # Client initialization parameters
     api_key: Optional[str] = None
@@ -208,12 +211,14 @@ class ChatOpenAI(BaseModel):
             params['seed'] = self.seed
         if self.service_tier is not None:
             params['service_tier'] = self.service_tier
-        if self.reasoning is not None:
-            params.update(self.reasoning)
         
         # Handle reasoning models
         if self.reasoning_models and any(str(m).lower() in str(self.model).lower() for m in self.reasoning_models):
-            # Remove temperature and frequency_penalty for reasoning models
+            # Reasoning models take reasoning params but reject sampling params.
+            # Everything else is the reverse: sending reasoning_effort to gpt-4o
+            # or deepseek-chat is a 400, so it is only added here.
+            if self.reasoning is not None:
+                params.update(self.reasoning)
             params.pop('temperature', None)
             params.pop('frequency_penalty', None)
         
@@ -225,12 +230,26 @@ class ChatOpenAI(BaseModel):
         
         # Handle response_format
         if response_format:
-            if isinstance(response_format, type) and issubclass(response_format, BaseModel):
-                # Pydantic model class - convert to JSON schema format using serializer
-                params['response_format'] = OpenAIChatSerializer.serialize_response_format(response_format)
-            elif isinstance(response_format, BaseModel):
-                # BaseModel instance - convert to JSON schema format using serializer
-                params['response_format'] = OpenAIChatSerializer.serialize_response_format(response_format)
+            is_model = (isinstance(response_format, type) and issubclass(response_format, BaseModel)) or isinstance(response_format, BaseModel)
+            if is_model:
+                # Pydantic model class or instance -> JSON schema via the serializer
+                schema_format = OpenAIChatSerializer.serialize_response_format(response_format)
+                if self.supports_json_schema:
+                    params['response_format'] = schema_format
+                else:
+                    # Providers without strict structured outputs (DeepSeek) get
+                    # plain JSON mode plus the same optimized schema in a system
+                    # message; _format_response validates the reply against the
+                    # model exactly as it does for json_schema. JSON mode also
+                    # requires the prompt to mention JSON, which this satisfies.
+                    import json
+                    schema = schema_format["json_schema"]["schema"]
+                    openai_messages.insert(0, {
+                        "role": "system",
+                        "content": "Respond with a single JSON object only - no prose, no code fences - "
+                                   "that conforms to this JSON schema:\n" + json.dumps(schema),
+                    })
+                    params['response_format'] = {"type": "json_object"}
             elif isinstance(response_format, dict):
                 # Dict format - use directly
                 params['response_format'] = response_format
@@ -445,7 +464,12 @@ class ChatOpenAI(BaseModel):
                 # Parse JSON content
                 import json
                 try:
-                    data = json.loads(content)
+                    text = content.strip()
+                    if text.startswith("```"):
+                        text = text.strip("`").strip()
+                        if text.lower().startswith("json"):
+                            text = text[4:]
+                    data = json.loads(text.strip())
                     parsed_model = response_format.model_validate(data)
                     
                     # Format as string
