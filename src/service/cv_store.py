@@ -7,8 +7,10 @@ track — just the profile itself, persisted so a template/format can be
 picked or changed after submission without resending the whole profile.
 """
 
+import hmac
 import json
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -22,7 +24,8 @@ CREATE TABLE IF NOT EXISTS cv_profiles (
     id TEXT PRIMARY KEY,
     profile_json TEXT NOT NULL,
     template TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    edit_token TEXT
 );
 """
 
@@ -35,18 +38,40 @@ class CVStore:
     async def init(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(_SCHEMA)
+            # A database created before edit_token existed won't get it from
+            # CREATE TABLE IF NOT EXISTS - add it if missing so an upgrade in
+            # place doesn't crash on the first read/write instead of forcing
+            # a fresh db file.
+            cols = {row[1] async for row in await db.execute("PRAGMA table_info(cv_profiles)")}
+            if "edit_token" not in cols:
+                await db.execute("ALTER TABLE cv_profiles ADD COLUMN edit_token TEXT")
             await db.commit()
 
-    async def create(self, profile: CVProfile, template: str) -> str:
+    async def create(self, profile: CVProfile, template: str) -> tuple:
+        """Returns (cv_id, edit_token). The token is generated once here and
+        never resurfaced by any GET - only the creation response includes
+        it - so a CV's share link (which is just its id) grants read/render
+        access but not edit access; that requires whoever created it to have
+        kept the token."""
         cv_id = uuid.uuid4().hex
+        edit_token = secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT INTO cv_profiles (id, profile_json, template, created_at) VALUES (?, ?, ?, ?)",
-                (cv_id, profile.model_dump_json(), template, now),
+                "INSERT INTO cv_profiles (id, profile_json, template, created_at, edit_token) VALUES (?, ?, ?, ?, ?)",
+                (cv_id, profile.model_dump_json(), template, now, edit_token),
             )
             await db.commit()
-        return cv_id
+        return cv_id, edit_token
+
+    def verify_edit_token(self, row: Dict[str, Any], token: Optional[str]) -> bool:
+        """Constant-time comparison so a wrong guess can't be timed to learn
+        how many leading characters matched. A row with no stored token (a
+        CV created before this existed, or through a path that never issues
+        one) can never be edited - fails closed rather than treating a
+        missing token as "no check needed"."""
+        stored = row.get("edit_token")
+        return bool(stored and token and hmac.compare_digest(stored, token))
 
     async def get(self, cv_id: str) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:

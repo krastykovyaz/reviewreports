@@ -218,14 +218,22 @@ class CVResponse(BaseModel):
     profile: dict
 
 
-@app.post("/cv", response_model=CVResponse)
+class CVCreateResponse(CVResponse):
+    # Only ever returned here, at creation - never by GET /cv/{id} or any
+    # rendered page - so a CV's share link (its bare id) grants read/render
+    # access but not edit access. Whoever creates a CV is responsible for
+    # keeping this if they want to revise it later via POST /cv/{id}/edit.
+    edit_token: str
+
+
+@app.post("/cv", response_model=CVCreateResponse)
 async def create_cv(request: CreateCVRequest):
     if request.template not in CV_TEMPLATES:
         raise HTTPException(status_code=400, detail=f"Unknown template '{request.template}'. Must be one of {CV_TEMPLATES}.")
 
     profile = CVProfile.model_validate(request.model_dump(exclude={"template"}))
-    cv_id = await _cv_store.create(profile, request.template)
-    return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
+    cv_id, edit_token = await _cv_store.create(profile, request.template)
+    return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token)
 
 
 class CreateCVFromTextRequest(BaseModel):
@@ -234,7 +242,7 @@ class CreateCVFromTextRequest(BaseModel):
     template: str = "modern"
 
 
-@app.post("/cv/from-text", response_model=CVResponse)
+@app.post("/cv/from-text", response_model=CVCreateResponse)
 async def create_cv_from_text(request: CreateCVFromTextRequest):
     """JSON counterpart of the /cv-builder/from-text form flow, for clients
     that render the result themselves (tsech's "Create CV" mode): free text
@@ -249,23 +257,30 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
     if profile is None:
         raise HTTPException(status_code=422, detail="Could not extract a CV from that text")
 
-    cv_id = await _cv_store.create(profile, request.template)
-    return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
+    cv_id, edit_token = await _cv_store.create(profile, request.template)
+    return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token)
 
 
 class EditCVRequest(BaseModel):
     instructions: str
     model_name: Optional[str] = None
+    edit_token: str
 
 
 @app.post("/cv/{cv_id}/edit", response_model=CVResponse)
 async def edit_cv(cv_id: str, request: EditCVRequest):
     """Revises a stored CV from a plain-language change request - the CV
     equivalent of "describe changes" on a generated app or document. Keeps
-    the same id/template/share link; only the stored profile changes."""
+    the same id/template/share link; only the stored profile changes.
+
+    Requires the token minted at creation - without this, a CV's id (which
+    is also its public share link) would have been enough on its own to
+    rewrite anyone's shared CV."""
     row = await _cv_store.get(cv_id)
     if row is None:
         raise HTTPException(status_code=404, detail="CV not found")
+    if not _cv_store.verify_edit_token(row, request.edit_token):
+        raise HTTPException(status_code=403, detail="Invalid or missing edit token")
 
     instructions = request.instructions.strip()
     if not instructions:
@@ -559,7 +574,10 @@ async def cv_builder_submit(
         languages=_split_csv(languages),
     )
 
-    cv_id = await _cv_store.create(profile, template=CV_TEMPLATES[0])
+    # The web form has no "describe changes" UI, so the edit token is simply
+    # never surfaced anywhere for a CV created this way - same fail-closed
+    # effect as not having one.
+    cv_id, _edit_token = await _cv_store.create(profile, template=CV_TEMPLATES[0])
     return RedirectResponse(url=f"/cv-builder/{cv_id}?lang={lang}", status_code=303)
 
 

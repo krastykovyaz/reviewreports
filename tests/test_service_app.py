@@ -11,6 +11,16 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "_store", JobStore(db_path=str(tmp_path / "jobs.db")))
     # Redirect uploads to a temp dir so tests never write into the real project workdir.
     monkeypatch.setattr(app_module, "_UPLOAD_DIR", str(tmp_path / "uploads"))
+    # Assert the "unrestricted" baseline explicitly rather than assume
+    # os.getenv("PUBLIC_KINDS") is unset: src.model.manager calls
+    # load_dotenv() at import time (for an unrelated reason - the model
+    # provider keys), which discovers this repo's real .env by walking up
+    # from cwd and loads it into os.environ regardless of what the test
+    # actually wants - including this repo's real, restrictive
+    # PUBLIC_KINDS=website_audit once that line exists there for
+    # production. Individual tests below still override this via their own
+    # monkeypatch to exercise the restricted case.
+    monkeypatch.setattr(app_module, "PUBLIC_KINDS", None)
 
     async def fake_generate_report(kind, input, model_name=None, lang="en"):
         return Report(

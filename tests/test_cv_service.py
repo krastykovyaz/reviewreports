@@ -31,6 +31,7 @@ def test_create_cv_defaults_to_modern_template(client):
     assert body["template"] == "modern"
     assert body["profile"]["name"] == "Jordan Reyes"
     assert "id" in body
+    assert len(body["edit_token"]) >= 16  # opaque, but must actually be present and non-trivial
 
 
 def test_create_cv_rejects_unknown_template(client):
@@ -50,6 +51,15 @@ def test_get_cv_roundtrips(client):
     body = resp.json()
     assert body["template"] == "classic"
     assert body["profile"]["contact"]["email"] == "jordan.reyes@email.com"
+
+
+def test_get_cv_never_exposes_the_edit_token(client):
+    # A CV's id is also its public share link - GET must not be a second way
+    # to fetch the credential that /edit checks, or the id alone would be
+    # enough to both read AND rewrite it, defeating the whole point.
+    cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
+    assert "edit_token" not in client.get(f"/cv/{cv_id}").json()
+    assert "edit_token" not in client.get(f"/cv/{cv_id}.html").text
 
 
 def test_get_unknown_cv_is_404(client):
@@ -359,6 +369,7 @@ def test_cv_from_text_json_creates_and_stores(client, monkeypatch):
     body = resp.json()
     assert body["template"] == "modern"
     assert body["profile"]["name"] == "Jordan Reyes"
+    assert len(body["edit_token"]) >= 16
     assert client.get(f"/cv/{body['id']}").json()["profile"]["contact"]["email"] == "jordan.reyes@email.com"
 
 
@@ -403,7 +414,8 @@ def test_cv_from_text_json_rejects_unknown_template(client):
 
 
 def test_edit_cv_applies_change_and_keeps_id_and_template(client, monkeypatch):
-    cv_id = client.post("/cv", json={**_SAMPLE_PAYLOAD, "template": "classic"}).json()["id"]
+    created = client.post("/cv", json={**_SAMPLE_PAYLOAD, "template": "classic"}).json()
+    cv_id, edit_token = created["id"], created["edit_token"]
 
     async def fake_edit(current, instructions, model_name):
         assert current.name == "Jordan Reyes"
@@ -412,7 +424,7 @@ def test_edit_cv_applies_change_and_keeps_id_and_template(client, monkeypatch):
         return current.model_copy(update={"skills": [*current.skills, "Kubernetes"]})
 
     monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
-    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "Add Kubernetes to skills"})
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "Add Kubernetes to skills", "edit_token": edit_token})
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == cv_id  # same id/link, not a new CV
@@ -424,14 +436,16 @@ def test_edit_cv_applies_change_and_keeps_id_and_template(client, monkeypatch):
 
 
 def test_edit_cv_forwards_model_name(client, monkeypatch):
-    cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
+    created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
 
     async def fake_edit(current, instructions, model_name):
         assert model_name == "openai/gpt-4o"
         return current
 
     monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
-    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "tighten the summary", "model_name": "openai/gpt-4o"})
+    resp = client.post(f"/cv/{created['id']}/edit", json={
+        "instructions": "tighten the summary", "model_name": "openai/gpt-4o", "edit_token": created["edit_token"],
+    })
     assert resp.status_code == 200
 
 
@@ -443,12 +457,42 @@ def test_edit_cv_unknown_id_is_404_without_calling_the_model(client, monkeypatch
         return current
 
     monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
-    resp = client.post("/cv/does-not-exist/edit", json={"instructions": "add a skill"})
+    resp = client.post("/cv/does-not-exist/edit", json={"instructions": "add a skill", "edit_token": "anything"})
     assert resp.status_code == 404
     assert called == []
 
 
 def test_edit_cv_rejects_blank_instructions_without_calling_the_model(client, monkeypatch):
+    created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
+    called = []
+
+    async def fake_edit(current, instructions, model_name):
+        called.append(instructions)
+        return current
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{created['id']}/edit", json={"instructions": "   ", "edit_token": created["edit_token"]})
+    assert resp.status_code == 422
+    assert called == []
+
+
+def test_edit_cv_failure_is_422_and_does_not_overwrite_stored_profile(client, monkeypatch):
+    created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
+    cv_id = created["id"]
+
+    async def fake_edit(current, instructions, model_name):
+        return None
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "add a skill", "edit_token": created["edit_token"]})
+    assert resp.status_code == 422
+    assert client.get(f"/cv/{cv_id}").json()["profile"]["skills"] == ["Python", "Go"]
+
+
+# ---- edit_token enforcement (a CV's share link must not double as an edit key) --
+
+
+def test_edit_cv_wrong_token_is_403_without_calling_the_model(client, monkeypatch):
     cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
     called = []
 
@@ -457,18 +501,26 @@ def test_edit_cv_rejects_blank_instructions_without_calling_the_model(client, mo
         return current
 
     monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
-    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "   "})
-    assert resp.status_code == 422
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "add a skill", "edit_token": "wrong-token"})
+    assert resp.status_code == 403
     assert called == []
+    # and the profile is untouched
+    assert client.get(f"/cv/{cv_id}").json()["profile"]["skills"] == ["Python", "Go"]
 
 
-def test_edit_cv_failure_is_422_and_does_not_overwrite_stored_profile(client, monkeypatch):
+def test_edit_cv_missing_token_field_is_422(client):
     cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
-
-    async def fake_edit(current, instructions, model_name):
-        return None
-
-    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
     resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "add a skill"})
     assert resp.status_code == 422
-    assert client.get(f"/cv/{cv_id}").json()["profile"]["skills"] == ["Python", "Go"]
+
+
+def test_edit_cv_a_cvs_own_token_does_not_work_on_a_different_cv(client, monkeypatch):
+    created_a = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
+    created_b = client.post("/cv", json={**_SAMPLE_PAYLOAD, "name": "Someone Else"}).json()
+
+    async def fake_edit(current, instructions, model_name):
+        return current
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{created_b['id']}/edit", json={"instructions": "add a skill", "edit_token": created_a["edit_token"]})
+    assert resp.status_code == 403
