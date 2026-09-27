@@ -116,3 +116,125 @@ def test_get_rendered_unsupported_extension_is_400(client):
 def test_get_rendered_unknown_cv_is_404(client):
     resp = client.get("/cv/does-not-exist.html")
     assert resp.status_code == 404
+
+
+# ---- Web flow (GET /cv-builder -> POST /cv-builder -> GET /cv-builder/{id}) ----
+
+_FORM_PAYLOAD = {
+    "name": "Jordan Reyes",
+    "role": "Senior Backend Engineer",
+    "summary": "Backend engineer with 8 years building distributed systems.",
+    "email": "jordan.reyes@email.com",
+    "phone": "+1 415 555 0142",
+    "location": "San Francisco, CA",
+    "links": "linkedin.com/in/jordanreyes, github.com/jreyes",
+    "skills": "Python, Go, PostgreSQL",
+    "languages": "English (native), Spanish (fluent)",
+}
+
+
+def test_cv_builder_form_renders(client):
+    resp = client.get("/cv-builder")
+    assert resp.status_code == 200
+    assert "CV builder" in resp.text
+    assert 'name="name"' in resp.text
+    assert 'name="email"' in resp.text
+
+
+def test_cv_builder_form_localizes(client):
+    resp = client.get("/cv-builder?lang=ru")
+    assert resp.status_code == 200
+    assert '<html lang="ru">' in resp.text
+    assert "Конструктор резюме" in resp.text  # ui.cv.builder_title
+
+
+def test_cv_builder_submit_requires_name_and_email(client):
+    resp = client.post("/cv-builder", data={"role": "Engineer"})
+    assert resp.status_code == 422
+
+
+def test_cv_builder_submit_redirects_to_result_page(client):
+    resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/cv-builder/")
+
+
+def test_cv_builder_submit_parses_scalar_and_csv_fields(client):
+    resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=False)
+    cv_id = resp.headers["location"].split("/cv-builder/")[1].split("?")[0]
+
+    profile = client.get(f"/cv/{cv_id}").json()["profile"]
+    assert profile["name"] == "Jordan Reyes"
+    assert profile["contact"]["email"] == "jordan.reyes@email.com"
+    assert profile["contact"]["links"] == ["linkedin.com/in/jordanreyes", "github.com/jreyes"]
+    assert profile["skills"] == ["Python", "Go", "PostgreSQL"]
+    assert profile["languages"] == ["English (native)", "Spanish (fluent)"]
+
+
+def test_cv_builder_submit_parses_experience_and_education_rows(client):
+    data = {
+        **_FORM_PAYLOAD,
+        "exp_title": ["Senior Backend Engineer", "Backend Engineer"],
+        "exp_organization": ["Northwind Systems", "Faircloud"],
+        "exp_location": ["San Francisco, CA", ""],
+        "exp_start": ["2021", "2017"],
+        "exp_end": ["Present", "2021"],
+        "exp_bullets": ["Redesigned the payments pipeline.\nMentored 4 engineers.", "Built the billing service."],
+        "edu_degree": ["B.S. Computer Science"],
+        "edu_institution": ["UC San Diego"],
+        "edu_year": ["2016"],
+    }
+    resp = client.post("/cv-builder", data=data, follow_redirects=False)
+    cv_id = resp.headers["location"].split("/cv-builder/")[1].split("?")[0]
+
+    profile = client.get(f"/cv/{cv_id}").json()["profile"]
+    assert len(profile["experience"]) == 2
+    assert profile["experience"][0]["organization"] == "Northwind Systems"
+    assert profile["experience"][0]["bullets"] == ["Redesigned the payments pipeline.", "Mentored 4 engineers."]
+    assert profile["experience"][1]["end"] == "2021"
+    assert profile["education"][0]["institution"] == "UC San Diego"
+
+
+def test_cv_builder_submit_skips_blank_experience_and_education_rows(client):
+    # Mirrors an untouched "+ Add another job/degree" row (all fields blank) -
+    # must not create an empty Experience/Education entry.
+    data = {
+        **_FORM_PAYLOAD,
+        "exp_title": ["Senior Backend Engineer", ""],
+        "exp_organization": ["Northwind Systems", ""],
+        "exp_location": ["", ""],
+        "exp_start": ["2021", ""],
+        "exp_end": ["Present", ""],
+        "exp_bullets": ["", ""],
+        "edu_degree": ["", "B.S. Computer Science"],
+        "edu_institution": ["", "UC San Diego"],
+        "edu_year": ["", "2016"],
+    }
+    resp = client.post("/cv-builder", data=data, follow_redirects=False)
+    cv_id = resp.headers["location"].split("/cv-builder/")[1].split("?")[0]
+
+    profile = client.get(f"/cv/{cv_id}").json()["profile"]
+    assert len(profile["experience"]) == 1
+    assert len(profile["education"]) == 1
+    assert profile["education"][0]["institution"] == "UC San Diego"
+
+
+def test_cv_builder_result_page_shows_all_three_templates(client):
+    resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=True)
+    assert resp.status_code == 200
+    assert "Jordan Reyes" not in resp.text  # embedded via iframe src, not inlined
+    for template in ("Modern", "Classic", "Compact"):
+        assert template in resp.text
+    assert "/cv/" in resp.text and ".pdf?template=" in resp.text
+
+
+def test_cv_builder_result_page_localizes(client):
+    resp = client.post("/cv-builder", data={**_FORM_PAYLOAD, "lang": "fr"}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert '<html lang="fr">' in resp.text
+    assert "Comparer les modèles" in resp.text  # ui.cv.result_title
+
+
+def test_cv_builder_result_page_unknown_id_is_404(client):
+    resp = client.get("/cv-builder/does-not-exist")
+    assert resp.status_code == 404

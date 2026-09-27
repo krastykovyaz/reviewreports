@@ -36,6 +36,7 @@ def test_home_page_renders_form(client):
     assert "reviewreports" in resp.text
     assert 'name="kind"' in resp.text
     assert "resume_review" in resp.text
+    assert 'href="/cv-builder?lang=en"' in resp.text
 
 
 def test_home_page_in_russian(client):

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<title>{{ t('ui.cv.result_title') }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  a.back { color: #2563eb; text-decoration: none; font-size: 0.9rem; }
+  .md-note { margin: 1rem 0 1.5rem; font-size: 0.9rem; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
+  .card { border: 1px solid rgba(127,127,127,0.3); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .card h3 { margin: 0; padding: 0.75rem 1rem; border-bottom: 1px solid rgba(127,127,127,0.25); font-size: 1rem; }
+  .card iframe { width: 100%; aspect-ratio: 8.5 / 11; border: none; }
+  .card .downloads { padding: 0.75rem 1rem; display: flex; gap: 1rem; }
+  .card .downloads a { color: #2563eb; text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+</style>
+</head>
+<body>
+  <a class="back" href="/cv-builder?lang={{ lang }}">&larr; {{ t('ui.cv.build_another') }}</a>
+
+  <h1>{{ t('ui.cv.result_title') }}</h1>
+  <p class="md-note">{{ t('ui.cv.download_md_note') }} <a href="/cv/{{ cv_id }}.md">{{ t('ui.download_md') }}</a></p>
+
+  <div class="gallery">
+    {% for value, label in cv_templates.items() %}
+    <div class="card">
+      <h3>{{ label }}</h3>
+      <iframe src="/cv/{{ cv_id }}.html?template={{ value }}" title="{{ label }}"></iframe>
+      <div class="downloads">
+        <a href="/cv/{{ cv_id }}.pdf?template={{ value }}">{{ t('ui.download_pdf') }}</a>
+        <a href="/cv/{{ cv_id }}.html?template={{ value }}">{{ t('ui.download_html') }}</a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</body>
+</html>

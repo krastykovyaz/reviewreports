@@ -16,14 +16,17 @@ plugs into both the API and the web flow the same way.
 A separate CV builder lives alongside the review kinds: POST /cv {profile,
 template} -> id; GET /cv/{id}.html|.pdf|.md for the rendered CV. No job
 queue there (unlike the review kinds' minutes-long scans, CV rendering is
-synchronous and fast - no LLM call, no browser scan).
+synchronous and fast - no LLM call, no browser scan). Its own B2C flow is
+GET /cv-builder (fill-in form) -> POST /cv-builder (plain form submit,
+mirroring /submit's redirect pattern) -> GET /cv-builder/{id} (all three
+templates side by side, pick one, download).
 """
 
 import json
 import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
@@ -31,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
-from src.cv.schema import CVProfile
+from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.i18n import SUPPORTED_LANGUAGES, normalize_lang, t_chrome
 from src.report.render import RENDERERS
 from src.report.schema import Report
@@ -284,3 +287,101 @@ async def view_report(request: Request, job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     lang = normalize_lang(job["lang"])
     return _templates.TemplateResponse(request, "view.html", {"job": job, "lang": lang, "t": lambda key, **kw: t_chrome(key, lang, **kw)})
+
+
+# ---- CV builder web flow -------------------------------------------------------
+
+
+@app.get("/cv-builder", response_class=HTMLResponse)
+async def cv_builder_form(request: Request, lang: str = "en"):
+    lang = normalize_lang(lang)
+    return _templates.TemplateResponse(
+        request,
+        "cv_builder.html",
+        {"lang": lang, "languages": SUPPORTED_LANGUAGES, "t": lambda key, **kw: t_chrome(key, lang, **kw)},
+    )
+
+
+def _split_csv(value: str) -> list:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+@app.post("/cv-builder")
+async def cv_builder_submit(
+    name: str = Form(...),
+    role: str = Form(""),
+    summary: str = Form(""),
+    email: str = Form(...),
+    phone: str = Form(""),
+    location: str = Form(""),
+    links: str = Form(""),
+    skills: str = Form(""),
+    languages: str = Form(""),
+    lang: str = Form("en"),
+    exp_title: List[str] = Form([]),
+    exp_organization: List[str] = Form([]),
+    exp_location: List[str] = Form([]),
+    exp_start: List[str] = Form([]),
+    exp_end: List[str] = Form([]),
+    exp_bullets: List[str] = Form([]),
+    edu_degree: List[str] = Form([]),
+    edu_institution: List[str] = Form([]),
+    edu_year: List[str] = Form([]),
+):
+    lang = normalize_lang(lang)
+
+    experience = []
+    for i, title in enumerate(exp_title):
+        if not title.strip():
+            continue
+        bullets = [b.strip() for b in exp_bullets[i].splitlines() if b.strip()] if i < len(exp_bullets) else []
+        experience.append(
+            Experience(
+                title=title.strip(),
+                organization=exp_organization[i].strip() if i < len(exp_organization) else "",
+                location=(exp_location[i].strip() or None) if i < len(exp_location) else None,
+                start=exp_start[i].strip() if i < len(exp_start) else "",
+                end=(exp_end[i].strip() or "Present") if i < len(exp_end) else "Present",
+                bullets=bullets,
+            )
+        )
+
+    education = []
+    for i, degree in enumerate(edu_degree):
+        if not degree.strip():
+            continue
+        education.append(
+            Education(
+                degree=degree.strip(),
+                institution=edu_institution[i].strip() if i < len(edu_institution) else "",
+                year=(edu_year[i].strip() or None) if i < len(edu_year) else None,
+            )
+        )
+
+    profile = CVProfile(
+        name=name.strip(),
+        role=role.strip() or None,
+        summary=summary.strip() or None,
+        contact=Contact(email=email.strip(), phone=phone.strip() or None, location=location.strip() or None, links=_split_csv(links)),
+        experience=experience,
+        education=education,
+        skills=_split_csv(skills),
+        languages=_split_csv(languages),
+    )
+
+    cv_id = await _cv_store.create(profile, template=CV_TEMPLATES[0])
+    return RedirectResponse(url=f"/cv-builder/{cv_id}?lang={lang}", status_code=303)
+
+
+@app.get("/cv-builder/{cv_id}", response_class=HTMLResponse)
+async def cv_builder_result(request: Request, cv_id: str, lang: str = "en"):
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    lang = normalize_lang(lang)
+    template_labels = {name: t_chrome(f"ui.cv.template.{name}", lang) for name in CV_TEMPLATES}
+    return _templates.TemplateResponse(
+        request,
+        "cv_result.html",
+        {"lang": lang, "cv_id": cv_id, "cv_templates": template_labels, "t": lambda key, **kw: t_chrome(key, lang, **kw)},
+    )
