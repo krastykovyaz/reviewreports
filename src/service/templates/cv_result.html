@@ -5,23 +5,63 @@
 <title>{{ t('ui.cv.result_title') }}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  a.back { color: #2563eb; text-decoration: none; font-size: 0.9rem; }
-  .md-note { margin: 1rem 0 1.5rem; font-size: 0.9rem; }
-  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
-  .card { border: 1px solid rgba(127,127,127,0.3); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
-  .card h3 { margin: 0; padding: 0.75rem 1rem; border-bottom: 1px solid rgba(127,127,127,0.25); font-size: 1rem; }
-  .card iframe { width: 100%; aspect-ratio: 8.5 / 11; border: none; }
-  .card .downloads { padding: 0.75rem 1rem; display: flex; gap: 1rem; }
-  .card .downloads a { color: #2563eb; text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --bg2: #f7f7f7;
+    --border: #e5e5e5;
+    --text: #1a1a1a; --text2: #4a4a4a; --text3: #888;
+    --blue: #0066ff;
+    --radius: 8px; --radius-sm: 5px;
+    --font: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--font); font-size: 14px; line-height: 1.5;
+    color: var(--text); background: var(--bg);
+    max-width: 1200px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  a.back {
+    display: inline-block; color: var(--text3); text-decoration: none;
+    font-size: 13px; margin-bottom: 1.25rem;
+  }
+  a.back:hover { color: var(--text); }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+  .meta { color: var(--text3); font-size: 13px; margin-bottom: 1.5rem; }
+  .meta a { color: var(--blue); text-decoration: none; }
+  .meta a:hover { text-decoration: underline; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.25rem; }
+  .card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; display: flex; flex-direction: column; background: var(--bg);
+  }
+  .card h3 {
+    margin: 0; padding: 0.7rem 1rem; border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; color: var(--text);
+  }
+  .card iframe { width: 100%; aspect-ratio: 8.5 / 11; border: none; background: var(--bg2); display: block; }
+  .card .downloads { padding: 0.65rem 0.75rem; display: flex; gap: 8px; border-top: 1px solid var(--border); }
+  .card .downloads a {
+    font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--text2); text-decoration: none;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 5px 10px;
+  }
+  .card .downloads a:hover { border-color: #999; color: var(--text); }
+  .tsech-footer {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    padding: 10px 16px; background: var(--bg); border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text2); text-decoration: none; z-index: 100;
+  }
+  .tsech-footer:hover { color: var(--text); }
+  .tsech-footer strong { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
   <a class="back" href="/audit/cv-builder?lang={{ lang }}">&larr; {{ t('ui.cv.build_another') }}</a>
 
   <h1>{{ t('ui.cv.result_title') }}</h1>
-  <p class="md-note">{{ t('ui.cv.download_md_note') }} <a href="/audit/cv/{{ cv_id }}.md">{{ t('ui.download_md') }}</a></p>
+  <p class="meta">{{ t('ui.cv.download_md_note') }} <a href="/audit/cv/{{ cv_id }}.md">{{ t('ui.download_md') }}</a></p>
 
   <div class="gallery">
     {% for value, label in cv_templates.items() %}
@@ -35,5 +75,9 @@
     </div>
     {% endfor %}
   </div>
+
+  <a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">
+    <span>{{ t('ui.create_with') }}</span><strong>tsech.online</strong>
+  </a>
 </body>
 </html>
