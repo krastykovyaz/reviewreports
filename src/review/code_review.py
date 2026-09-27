@@ -12,28 +12,22 @@ import os
 import shutil
 import tempfile
 from collections import Counter
-from typing import List, Optional
-
-from pydantic import BaseModel, Field
+from typing import Optional
 
 from src.i18n import normalize_lang, pillar_name
 from src.i18n.core import make_translator
-from src.logger import logger
-from src.message.types import HumanMessage, SystemMessage
-from src.model import model_manager
 from src.report.helpers import build_recommendations, verdict_for
 from src.report.schema import Finding, Pillar, Report, ReportMeta, Status
+from src.review._code_sampling import (
+    MAX_FILES_SAMPLED as _MAX_FILES_SAMPLED,
+    MAX_SAMPLE_CHARS as _MAX_SAMPLE_CHARS,
+    CodeLLMReview,
+    llm_review_code,
+    sample_source,
+    walk_files,
+)
 
-_IGNORED_DIRS = {
-    ".git", "venv", ".venv", "node_modules", "__pycache__", "dist", "build",
-    ".mypy_cache", ".pytest_cache", ".tox", ".idea", ".vscode",
-}
-_CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".cpp", ".h", ".cs", ".php", ".swift", ".kt",
-}
-_MAX_SAMPLE_CHARS = 8000
-_MAX_FILES_SAMPLED = 10
-_LANGUAGE_NAMES = {"en": "English", "ru": "Russian", "fr": "French"}
+_CODE_REVIEW_PERSONA = "You are a senior software engineer performing a code review."
 
 _M = {
     "check.readme": {"en": "README", "ru": "README", "fr": "README"},
@@ -83,20 +77,9 @@ async def _clone_repo(url: str, dest: str) -> None:
         raise RuntimeError(f"git clone failed: {stderr.decode(errors='replace')[:500]}")
 
 
-def _walk_files(root: str) -> List[str]:
-    # Excludes only explicitly-known junk/vendor dirs, not every dot-dir — .github (CI
-    # config) and similar dot-dirs with real signal must stay walkable.
-    files = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _IGNORED_DIRS]
-        for name in filenames:
-            files.append(os.path.join(dirpath, name))
-    return files
-
-
 def collect_repo_structure(root: str, lang: str = "en") -> Pillar:
     lang = normalize_lang(lang)
-    files = _walk_files(root)
+    files = walk_files(root)
     ext_counts = Counter(os.path.splitext(f)[1].lower() for f in files if os.path.splitext(f)[1])
 
     findings = []
@@ -133,50 +116,6 @@ def collect_repo_structure(root: str, lang: str = "en") -> Pillar:
     return Pillar(name=pillar_name("Repository Structure", lang), score=score, summary=summary, findings=findings)
 
 
-class CodeLLMReview(BaseModel):
-    code_quality: int = Field(ge=1, le=10, description="Overall code quality of the sampled files")
-    issues: List[str] = Field(default_factory=list, description="Specific bugs, smells, or risky patterns found, naming files when visible")
-    summary: str = Field(description="One or two sentence overall assessment")
-
-
-def _sample_source(root: str, max_chars: int = _MAX_SAMPLE_CHARS) -> str:
-    files = [f for f in _walk_files(root) if os.path.splitext(f)[1].lower() in _CODE_EXTENSIONS]
-    files.sort(key=lambda f: os.path.getsize(f), reverse=True)  # largest files first: likely the most substantive
-
-    chunks = []
-    total = 0
-    for f in files[:_MAX_FILES_SAMPLED]:
-        if total >= max_chars:
-            break
-        try:
-            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                content = fh.read(max_chars - total)
-        except OSError:
-            continue
-        rel = os.path.relpath(f, root)
-        chunk = f"--- {rel} ---\n{content}\n"
-        chunks.append(chunk)
-        total += len(chunk)
-    return "".join(chunks)
-
-
-async def _llm_review_code(sample: str, model_name: str, lang: str) -> Optional[CodeLLMReview]:
-    language_name = _LANGUAGE_NAMES.get(lang, "English")
-    messages = [
-        SystemMessage(content=f"You are a senior software engineer performing a code review. Be concrete: cite specific issues, not generic advice. Respond in {language_name}: the 'summary' and 'issues' fields must be written in {language_name}."),
-        HumanMessage(content=f"Review these source file excerpts from a repository:\n\n{sample}"),
-    ]
-    try:
-        response = await model_manager(model=model_name, messages=messages, response_format=CodeLLMReview)
-    except Exception as exc:
-        logger.warning(f"| ⚠️ Code LLM review failed for model {model_name}: {exc}")
-        return None
-    if not response.success or not response.extra or not response.extra.parsed_model:
-        logger.warning(f"| ⚠️ Code LLM review returned no structured result: {getattr(response, 'message', None)}")
-        return None
-    return response.extra.parsed_model
-
-
 async def collect_code_quality(root: str, model_name: Optional[str], lang: str = "en") -> Pillar:
     lang = normalize_lang(lang)
     name = pillar_name("Code Quality", lang)
@@ -185,11 +124,11 @@ async def collect_code_quality(root: str, model_name: Optional[str], lang: str =
     if not model_name:
         return Pillar(name=name, score=None, summary=_t("quality.na_no_model_summary", lang), findings=[Finding(check=check, status=Status.NA, detail=_t("quality.na_no_model", lang))])
 
-    sample = _sample_source(root)
+    sample = sample_source(root)
     if not sample.strip():
         return Pillar(name=name, score=None, summary=_t("quality.na_no_files_summary", lang), findings=[Finding(check=check, status=Status.NA, detail=_t("quality.na_no_files", lang))])
 
-    review = await _llm_review_code(sample, model_name, lang)
+    review = await llm_review_code(sample, model_name, lang, _CODE_REVIEW_PERSONA)
     if review is None:
         return Pillar(name=name, score=None, summary=_t("quality.na_failed_summary", lang), findings=[Finding(check=check, status=Status.NA, detail=_t("quality.na_failed", lang, model=model_name))])
 

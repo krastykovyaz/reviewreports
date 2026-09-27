@@ -18,6 +18,7 @@
   button { font: inherit; padding: 0.7rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; font-weight: 600; cursor: pointer; }
   button:hover { background: #1d4ed8; }
   .error { color: #cf222e; margin-top: 1rem; }
+  .cv-nav { display: block; margin-top: 1.5rem; color: #2563eb; text-decoration: none; font-size: 0.9rem; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -58,6 +59,8 @@
 
     <button type="submit">{{ t('ui.generate') }}</button>
   </form>
+
+  <a class="cv-nav" href="/cv-builder?lang={{ lang }}">{{ t('ui.cv.nav_link') }} &rarr;</a>
 
   <script>
     const FILE_KINDS = {{ file_kinds | tojson }};

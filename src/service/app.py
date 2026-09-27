@@ -12,23 +12,36 @@ Two ways in:
 
 The job model is kind-agnostic: every registered kind in src.review.generate
 plugs into both the API and the web flow the same way.
+
+A separate CV builder lives alongside the review kinds: POST /cv {profile,
+template} -> id; GET /cv/{id}.html|.pdf|.md for the rendered CV. No job
+queue there (unlike the review kinds' minutes-long scans, CV rendering is
+synchronous and fast - no LLM call, no browser scan). Its own B2C flow is
+GET /cv-builder (fill-in form) -> POST /cv-builder (plain form submit,
+mirroring /submit's redirect pattern) -> GET /cv-builder/{id} (all three
+templates side by side, pick one, download).
 """
 
 import json
 import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from src.cv.extract import extract_cv_profile
+from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
+from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.i18n import SUPPORTED_LANGUAGES, normalize_lang, t_chrome
+from src.model import model_manager
 from src.report.render import RENDERERS
 from src.report.schema import Report
 from src.review.generate import generate_report, supported_kinds
+from src.service.cv_store import CVStore
 from src.service.db import JobStatus, JobStore
 from src.utils import assemble_project_path
 
@@ -36,9 +49,13 @@ _MEDIA_TYPES = {"markdown": "text/markdown", "html": "text/html", "latex": "text
 _EXTENSION_TO_FORMAT = {"md": "markdown", "html": "html", "tex": "latex", "pdf": "pdf"}
 _BINARY_FORMATS = {"pdf"}
 
+_CV_EXTENSION_TO_FORMAT = {"html": "html", "pdf": "pdf", "md": "markdown"}
+_DEFAULT_CV_EXTRACTION_MODEL = "deepseek/deepseek-chat"
+
 _KIND_LABEL_KEYS = {
     "website_audit": "ui.kind.website_audit",
     "code_review": "ui.kind.code_review",
+    "app_review": "ui.kind.app_review",
     "resume_review": "ui.kind.resume_review",
     "presentation_review": "ui.kind.presentation_review",
     "book_review": "ui.kind.book_review",
@@ -48,13 +65,20 @@ _FILE_KINDS = {"resume_review", "presentation_review", "book_review"}
 _UPLOAD_DIR = assemble_project_path("workdir/uploads")
 
 _store = JobStore(db_path="workdir/service/jobs.db")
+_cv_store = CVStore(db_path="workdir/service/cv.db")
 _templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _store.init()
+    await _cv_store.init()
     os.makedirs(_UPLOAD_DIR, exist_ok=True)
+    # Without this, every LLM-dependent pillar/feature across every kind (and
+    # CV extraction) fails at call time with "Model X not found. Available
+    # models: []" - model_manager's registry is only populated by this call,
+    # and nothing else in the service was triggering it.
+    await model_manager.initialize()
     yield
 
 
@@ -153,6 +177,70 @@ async def get_report(job_id: str):
     return _job_response(job)
 
 
+# ---- CV builder ---------------------------------------------------------------
+
+
+class CreateCVRequest(CVProfile):
+    template: str = "modern"
+
+
+class CVResponse(BaseModel):
+    id: str
+    template: str
+    profile: dict
+
+
+@app.post("/cv", response_model=CVResponse)
+async def create_cv(request: CreateCVRequest):
+    if request.template not in CV_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template '{request.template}'. Must be one of {CV_TEMPLATES}.")
+
+    profile = CVProfile.model_validate(request.model_dump(exclude={"template"}))
+    cv_id = await _cv_store.create(profile, request.template)
+    return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
+
+
+@app.get("/cv/{cv_id}.{extension}")
+async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = None):
+    # Registered before /cv/{cv_id}, same reason as /reports/{job_id}.{extension}
+    # above: Starlette's {cv_id} path converter matches dots too.
+    output_format = _CV_EXTENSION_TO_FORMAT.get(extension)
+    if output_format is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported extension '.{extension}'. Use .html, .pdf, or .md.")
+
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+    profile = await _cv_store.get_profile(cv_id)
+    chosen_template = template or row["template"]
+    if output_format != "markdown" and chosen_template not in CV_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template '{chosen_template}'. Must be one of {CV_TEMPLATES}.")
+
+    if output_format == "html":
+        rendered = render_cv_html(profile, chosen_template)
+    elif output_format == "pdf":
+        try:
+            rendered = render_cv_pdf(profile, chosen_template)
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
+    else:
+        rendered = render_cv_markdown(profile)
+
+    if output_format == "pdf":
+        return Response(content=rendered, media_type="application/pdf")
+    media_type = "text/html" if output_format == "html" else "text/markdown"
+    return PlainTextResponse(content=rendered, media_type=media_type)
+
+
+@app.get("/cv/{cv_id}", response_model=CVResponse)
+async def get_cv(cv_id: str):
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    return CVResponse(id=row["id"], template=row["template"], profile=json.loads(row["profile_json"]))
+
+
 # ---- B2C web flow --------------------------------------------------------------
 
 
@@ -244,3 +332,122 @@ async def view_report(request: Request, job_id: str):
         "meta_title": meta_title, "meta_description": meta_description,
         "t": lambda key, **kw: t_chrome(key, lang, **kw),
     })
+
+
+# ---- CV builder web flow -------------------------------------------------------
+
+
+def _render_cv_builder_form(request: Request, lang: str, *, profile: Optional[CVProfile] = None, extract_error: Optional[str] = None, pasted_text: str = "", status_code: int = 200) -> HTMLResponse:
+    return _templates.TemplateResponse(
+        request,
+        "cv_builder.html",
+        {
+            "lang": lang,
+            "languages": SUPPORTED_LANGUAGES,
+            "t": lambda key, **kw: t_chrome(key, lang, **kw),
+            "profile": profile.model_dump() if profile else None,
+            "extract_error": extract_error,
+            "pasted_text": pasted_text,
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/cv-builder", response_class=HTMLResponse)
+async def cv_builder_form(request: Request, lang: str = "en"):
+    lang = normalize_lang(lang)
+    return _render_cv_builder_form(request, lang)
+
+
+@app.post("/cv-builder/from-text", response_class=HTMLResponse)
+async def cv_builder_from_text(request: Request, text: str = Form(...), model_name: str = Form(""), lang: str = Form("en")):
+    lang = normalize_lang(lang)
+    profile = await extract_cv_profile(text.strip(), model_name.strip() or _DEFAULT_CV_EXTRACTION_MODEL)
+    if profile is None:
+        return _render_cv_builder_form(request, lang, extract_error=t_chrome("ui.cv.extract_failed", lang), pasted_text=text, status_code=422)
+    return _render_cv_builder_form(request, lang, profile=profile)
+
+
+def _split_csv(value: str) -> list:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+@app.post("/cv-builder")
+async def cv_builder_submit(
+    name: str = Form(...),
+    role: str = Form(""),
+    summary: str = Form(""),
+    email: str = Form(...),
+    phone: str = Form(""),
+    location: str = Form(""),
+    links: str = Form(""),
+    skills: str = Form(""),
+    languages: str = Form(""),
+    lang: str = Form("en"),
+    exp_title: List[str] = Form([]),
+    exp_organization: List[str] = Form([]),
+    exp_location: List[str] = Form([]),
+    exp_start: List[str] = Form([]),
+    exp_end: List[str] = Form([]),
+    exp_bullets: List[str] = Form([]),
+    edu_degree: List[str] = Form([]),
+    edu_institution: List[str] = Form([]),
+    edu_year: List[str] = Form([]),
+):
+    lang = normalize_lang(lang)
+
+    experience = []
+    for i, title in enumerate(exp_title):
+        if not title.strip():
+            continue
+        bullets = [b.strip() for b in exp_bullets[i].splitlines() if b.strip()] if i < len(exp_bullets) else []
+        experience.append(
+            Experience(
+                title=title.strip(),
+                organization=exp_organization[i].strip() if i < len(exp_organization) else "",
+                location=(exp_location[i].strip() or None) if i < len(exp_location) else None,
+                start=exp_start[i].strip() if i < len(exp_start) else "",
+                end=(exp_end[i].strip() or "Present") if i < len(exp_end) else "Present",
+                bullets=bullets,
+            )
+        )
+
+    education = []
+    for i, degree in enumerate(edu_degree):
+        if not degree.strip():
+            continue
+        education.append(
+            Education(
+                degree=degree.strip(),
+                institution=edu_institution[i].strip() if i < len(edu_institution) else "",
+                year=(edu_year[i].strip() or None) if i < len(edu_year) else None,
+            )
+        )
+
+    profile = CVProfile(
+        name=name.strip(),
+        role=role.strip() or None,
+        summary=summary.strip() or None,
+        contact=Contact(email=email.strip(), phone=phone.strip() or None, location=location.strip() or None, links=_split_csv(links)),
+        experience=experience,
+        education=education,
+        skills=_split_csv(skills),
+        languages=_split_csv(languages),
+    )
+
+    cv_id = await _cv_store.create(profile, template=CV_TEMPLATES[0])
+    return RedirectResponse(url=f"/cv-builder/{cv_id}?lang={lang}", status_code=303)
+
+
+@app.get("/cv-builder/{cv_id}", response_class=HTMLResponse)
+async def cv_builder_result(request: Request, cv_id: str, lang: str = "en"):
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    lang = normalize_lang(lang)
+    template_labels = {name: t_chrome(f"ui.cv.template.{name}", lang) for name in CV_TEMPLATES}
+    return _templates.TemplateResponse(
+        request,
+        "cv_result.html",
+        {"lang": lang, "cv_id": cv_id, "cv_templates": template_labels, "t": lambda key, **kw: t_chrome(key, lang, **kw)},
+    )

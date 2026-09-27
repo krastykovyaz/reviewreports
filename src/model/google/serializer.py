@@ -327,57 +327,92 @@ class GoogleChatSerializer:
             return []
     
     @staticmethod
+    def _to_gemini_schema(schema: Dict[str, Any], defs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Recursively convert a standard JSON Schema (as pydantic's
+        model_json_schema() produces) into Gemini's restricted schema
+        dialect.
+
+        Gemini's response_schema only understands: type, format,
+        description, nullable, enum, items, properties, required,
+        propertyOrdering. It does not understand $ref/$defs (raises
+        "Unknown field for Schema: $defs" - confirmed against the real API,
+        not just docs), nor anyOf/oneAf/allOf, additionalProperties, title,
+        or default. Any pydantic model with a nested BaseModel field (e.g.
+        CVProfile's Contact/Experience/Education, or an Optional[str]
+        field, which pydantic renders as anyOf-with-null) hits this.
+        """
+        if defs is None:
+            defs = schema.get("$defs", {})
+
+        if "$ref" in schema:
+            ref_name = schema["$ref"].rsplit("/", 1)[-1]
+            return GoogleChatSerializer._to_gemini_schema(defs[ref_name], defs)
+
+        if "anyOf" in schema:
+            variants = schema["anyOf"]
+            non_null = [v for v in variants if v.get("type") != "null"]
+            is_nullable = len(non_null) < len(variants)
+            # Gemini has no real union type either; a Union[str, int] field
+            # (unlike a merely-Optional one) collapses to its first variant
+            # rather than being dropped or raising.
+            resolved = GoogleChatSerializer._to_gemini_schema(non_null[0], defs) if non_null else {"type": "string"}
+            if is_nullable:
+                resolved["nullable"] = True
+            return resolved
+
+        schema_type = schema.get("type")
+        result: Dict[str, Any] = {}
+        if schema_type:
+            result["type"] = schema_type
+        if "description" in schema:
+            result["description"] = schema["description"]
+        if "enum" in schema:
+            result["enum"] = schema["enum"]
+        if "format" in schema:
+            result["format"] = schema["format"]
+
+        if schema_type == "object" or "properties" in schema:
+            result["type"] = "object"
+            properties = schema.get("properties", {})
+            result["properties"] = {name: GoogleChatSerializer._to_gemini_schema(value, defs) for name, value in properties.items()}
+            if "required" in schema:
+                result["required"] = schema["required"]
+        elif schema_type == "array" or "items" in schema:
+            result["type"] = "array"
+            if "items" in schema:
+                result["items"] = GoogleChatSerializer._to_gemini_schema(schema["items"], defs)
+
+        return result
+
+    @staticmethod
     def serialize_response_format(
         response_format: Union[Type[BaseModel], BaseModel, Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
         Format response_format to Google Gemini's response_schema parameter.
-        
+
         Google Gemini uses response_schema:
         - Format: JSON Schema object
         - Requires response_mime_type: "application/json"
-        
+
         Args:
             response_format: BaseModel class, instance, or dict
-            
+
         Returns:
             Dictionary containing response_schema configuration:
             - response_schema: JSON schema
             - response_mime_type: "application/json"
         """
         if isinstance(response_format, type) and issubclass(response_format, BaseModel):
-            # Pydantic model class - get JSON schema
-            schema = response_format.model_json_schema()
-            # Ensure additionalProperties: false for structured output
-            if schema.get("type") == "object" and "additionalProperties" not in schema:
-                schema["additionalProperties"] = False
-            elif "properties" in schema and "type" not in schema:
-                schema["type"] = "object"
-                schema["additionalProperties"] = False
-            
-            return {
-                'response_schema': schema,
-                'response_mime_type': 'application/json'
-            }
+            model_class = response_format
         elif isinstance(response_format, BaseModel):
-            # BaseModel instance - get the class
             model_class = type(response_format)
-            schema = model_class.model_json_schema()
-            # Ensure additionalProperties: false
-            if schema.get("type") == "object" and "additionalProperties" not in schema:
-                schema["additionalProperties"] = False
-            elif "properties" in schema and "type" not in schema:
-                schema["type"] = "object"
-                schema["additionalProperties"] = False
-            
-            return {
-                'response_schema': schema,
-                'response_mime_type': 'application/json'
-            }
         elif isinstance(response_format, dict):
             # Dict format - check if it's already in response_schema format
             if "response_schema" in response_format:
-                # Already in response_schema format
+                # Already in response_schema format - caller's responsibility
+                # to have made it Gemini-compatible.
                 return {
                     'response_schema': response_format.get('response_schema'),
                     'response_mime_type': response_format.get('response_mime_type', 'application/json')
@@ -387,15 +422,21 @@ class GoogleChatSerializer:
                 json_schema_obj = response_format["json_schema"]
                 schema = json_schema_obj.get("schema", {})
                 return {
-                    'response_schema': schema,
+                    'response_schema': GoogleChatSerializer._to_gemini_schema(schema),
                     'response_mime_type': 'application/json'
                 }
             else:
-                # Assume it's a schema dict - wrap it
+                # Assume it's a schema dict - sanitize and wrap it
                 return {
-                    'response_schema': response_format,
+                    'response_schema': GoogleChatSerializer._to_gemini_schema(response_format),
                     'response_mime_type': 'application/json'
                 }
         else:
             raise ValueError(f"Unsupported response_format type: {type(response_format)}")
+
+        schema = GoogleChatSerializer._to_gemini_schema(model_class.model_json_schema())
+        return {
+            'response_schema': schema,
+            'response_mime_type': 'application/json'
+        }
 

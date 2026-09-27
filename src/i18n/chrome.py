@@ -20,6 +20,8 @@ PILLAR_NAMES = {
     "Resume Review": {"en": "Resume Review", "ru": "Резюме: отзыв", "fr": "CV : critique"},
     "Presentation Review": {"en": "Presentation Review", "ru": "Презентация: отзыв", "fr": "Présentation : critique"},
     "Book/Manuscript Review": {"en": "Book/Manuscript Review", "ru": "Книга/рукопись: отзыв", "fr": "Livre/manuscrit : critique"},
+    "App Structure": {"en": "App Structure", "ru": "Структура приложения", "fr": "Structure de l'application"},
+    "Security Hygiene": {"en": "Security Hygiene", "ru": "Гигиена безопасности кода", "fr": "Hygiène de sécurité du code"},
 }
 
 FLAVOR_LABELS = {
@@ -34,6 +36,7 @@ KIND_TITLES = {
     "resume_review": {"en": "Resume Review Report", "ru": "Отчёт о проверке резюме", "fr": "Rapport de révision du CV"},
     "presentation_review": {"en": "Presentation Review Report", "ru": "Отчёт о проверке презентации", "fr": "Rapport de révision de la présentation"},
     "book_review": {"en": "Book Review Report", "ru": "Отчёт о рецензии книги", "fr": "Rapport de critique du livre"},
+    "app_review": {"en": "App Review Report", "ru": "Отчёт о проверке приложения", "fr": "Rapport de revue d'application"},
 }
 
 _CHROME = {
@@ -101,9 +104,53 @@ _CHROME = {
     "ui.create_with": {"en": "Create with", "ru": "Создать с", "fr": "Créer avec"},
     "ui.kind.website_audit": {"en": "Website audit (URL)", "ru": "Аудит сайта (URL)", "fr": "Audit de site (URL)"},
     "ui.kind.code_review": {"en": "Code review (repo path or git URL)", "ru": "Ревью кода (путь или git-адрес)", "fr": "Revue de code (chemin ou URL git)"},
+    "ui.kind.app_review": {"en": "App review (small app directory path)", "ru": "Проверка приложения (путь к директории)", "fr": "Revue d'application (chemin du dossier)"},
     "ui.kind.resume_review": {"en": "Resume review (upload file)", "ru": "Проверка резюме (загрузить файл)", "fr": "Révision de CV (importer un fichier)"},
     "ui.kind.presentation_review": {"en": "Presentation review (upload file)", "ru": "Проверка презентации (загрузить файл)", "fr": "Révision de présentation (importer un fichier)"},
     "ui.kind.book_review": {"en": "Book / manuscript review (upload file)", "ru": "Рецензия книги / рукописи (загрузить файл)", "fr": "Critique de livre / manuscrit (importer un fichier)"},
+
+    "ui.cv.nav_link": {"en": "Build a CV instead", "ru": "Или создать резюме", "fr": "Ou créer un CV"},
+    "ui.cv.builder_title": {"en": "CV builder", "ru": "Конструктор резюме", "fr": "Générateur de CV"},
+    "ui.cv.tagline": {"en": "Fill in your details once, then compare three one-page templates and download the one you like.", "ru": "Заполните данные один раз, сравните три шаблона на одну страницу и скачайте тот, что понравится.", "fr": "Renseignez vos informations une fois, comparez trois modèles d'une page et téléchargez celui que vous préférez."},
+    "ui.cv.name": {"en": "Full name", "ru": "Полное имя", "fr": "Nom complet"},
+    "ui.cv.role": {"en": "Headline / role", "ru": "Должность / роль", "fr": "Titre / poste"},
+    "ui.cv.summary": {"en": "Summary", "ru": "Резюме о себе", "fr": "Résumé"},
+    "ui.cv.email": {"en": "Email", "ru": "Эл. почта", "fr": "E-mail"},
+    "ui.cv.phone": {"en": "Phone", "ru": "Телефон", "fr": "Téléphone"},
+    "ui.cv.location": {"en": "Location", "ru": "Местоположение", "fr": "Localisation"},
+    "ui.cv.links": {"en": "Links (comma-separated)", "ru": "Ссылки (через запятую)", "fr": "Liens (séparés par des virgules)"},
+    "ui.cv.skills": {"en": "Skills (comma-separated)", "ru": "Навыки (через запятую)", "fr": "Compétences (séparées par des virgules)"},
+    "ui.cv.languages": {"en": "Languages (comma-separated)", "ru": "Языки (через запятую)", "fr": "Langues (séparées par des virgules)"},
+    "ui.cv.experience_section": {"en": "Experience", "ru": "Опыт работы", "fr": "Expérience"},
+    "ui.cv.education_section": {"en": "Education", "ru": "Образование", "fr": "Formation"},
+    "ui.cv.exp_title": {"en": "Job title", "ru": "Должность", "fr": "Intitulé du poste"},
+    "ui.cv.exp_organization": {"en": "Company", "ru": "Компания", "fr": "Entreprise"},
+    "ui.cv.exp_location": {"en": "Location", "ru": "Местоположение", "fr": "Lieu"},
+    "ui.cv.exp_start": {"en": "Start", "ru": "Начало", "fr": "Début"},
+    "ui.cv.exp_end": {"en": "End", "ru": "Окончание", "fr": "Fin"},
+    "ui.cv.exp_bullets": {"en": "Highlights (one per line)", "ru": "Достижения (по одному на строку)", "fr": "Points clés (un par ligne)"},
+    "ui.cv.edu_degree": {"en": "Degree", "ru": "Степень / специальность", "fr": "Diplôme"},
+    "ui.cv.edu_institution": {"en": "Institution", "ru": "Учебное заведение", "fr": "Établissement"},
+    "ui.cv.edu_year": {"en": "Year", "ru": "Год", "fr": "Année"},
+    "ui.cv.add_experience": {"en": "+ Add another job", "ru": "+ Добавить место работы", "fr": "+ Ajouter un poste"},
+    "ui.cv.add_education": {"en": "+ Add another degree", "ru": "+ Добавить образование", "fr": "+ Ajouter une formation"},
+    "ui.cv.remove": {"en": "Remove", "ru": "Удалить", "fr": "Supprimer"},
+    "ui.cv.generate": {"en": "Generate CV", "ru": "Сформировать резюме", "fr": "Générer le CV"},
+    "ui.cv.result_title": {"en": "Compare templates", "ru": "Сравнение шаблонов", "fr": "Comparer les modèles"},
+    "ui.cv.build_another": {"en": "Build another CV", "ru": "Создать другое резюме", "fr": "Créer un autre CV"},
+    "ui.cv.download_md_note": {"en": "Markdown is the same across templates:", "ru": "Markdown-версия одинакова для всех шаблонов:", "fr": "La version Markdown est identique pour tous les modèles :"},
+    "ui.cv.template.modern": {"en": "Modern", "ru": "Модерн", "fr": "Moderne"},
+    "ui.cv.template.classic": {"en": "Classic", "ru": "Классический", "fr": "Classique"},
+    "ui.cv.template.compact": {"en": "Compact", "ru": "Компактный", "fr": "Compact"},
+
+    "ui.cv.mode_manual": {"en": "Fill in manually", "ru": "Заполнить вручную", "fr": "Remplir manuellement"},
+    "ui.cv.mode_paste": {"en": "Paste your info instead", "ru": "Или вставьте информацию о себе", "fr": "Ou collez vos informations"},
+    "ui.cv.paste_intro": {"en": "Paste anything about yourself — a rough draft, your LinkedIn \"About\" text, plain notes — and a model will organize it into the form below for you to review.", "ru": "Вставьте что угодно о себе — черновик, текст из раздела «Обо мне» в LinkedIn, обычные заметки — модель организует это в форму ниже, а вы сможете всё проверить.", "fr": "Collez n'importe quoi vous concernant — une ébauche, votre texte « À propos » LinkedIn, de simples notes — un modèle l'organisera dans le formulaire ci-dessous pour que vous puissiez le vérifier."},
+    "ui.cv.paste_text": {"en": "About you", "ru": "О вас", "fr": "À propos de vous"},
+    "ui.cv.paste_model": {"en": "Model (required to extract from text)", "ru": "Модель (нужна для извлечения из текста)", "fr": "Modèle (requis pour extraire le texte)"},
+    "ui.cv.paste_submit": {"en": "Generate from text", "ru": "Сформировать из текста", "fr": "Générer à partir du texte"},
+    "ui.cv.extract_failed": {"en": "Could not extract a CV from that text. Check the model name is correct and configured on this server, or fill in the form manually below.", "ru": "Не удалось извлечь резюме из текста. Проверьте, что название модели верно и она настроена на сервере, либо заполните форму вручную ниже.", "fr": "Impossible d'extraire un CV à partir de ce texte. Vérifiez que le nom du modèle est correct et configuré sur ce serveur, ou remplissez le formulaire manuellement ci-dessous."},
+    "ui.cv.review_note": {"en": "Extracted from your text — review and correct anything before generating.", "ru": "Извлечено из вашего текста — проверьте и исправьте всё необходимое перед созданием.", "fr": "Extrait de votre texte — vérifiez et corrigez si nécessaire avant de générer."},
 }
 
 t_chrome = make_translator(_CHROME)

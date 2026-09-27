@@ -7,7 +7,7 @@ including browser automation and deep research capabilities.
 Tools are resolved lazily on first attribute access (PEP 562) so importing
 one of them — e.g. ``WebsiteAuditTool`` — doesn't import the rest, several
 of which pull in heavy dependency trees (browser automation, deep research,
-code/document review). ``from src.tool.workflow_tools import X`` still works.
+code/app/document review). ``from src.tool.workflow_tools import X`` still works.
 """
 import importlib
 import sys
@@ -19,6 +19,7 @@ _LAZY = {
     "ReportTool": ".report",
     "WebsiteAuditTool": ".website_audit",
     "CodeReviewTool": ".code_review",
+    "AppReviewTool": ".app_review",
     "DocumentReviewTool": ".document_review",
 }
 

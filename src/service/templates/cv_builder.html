@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<title>{{ t('ui.cv.builder_title') }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 760px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { margin-bottom: 0.2rem; }
+  h2 { font-size: 1.05rem; margin: 2rem 0 0.75rem; }
+  p.tagline { color: #666; margin-top: 0; }
+  .lang-switch { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+  .lang-switch a { padding: 0.3rem 0.7rem; border-radius: 6px; border: 1px solid rgba(127,127,127,0.4); text-decoration: none; color: inherit; font-size: 0.85rem; font-weight: 600; }
+  .lang-switch a.active { background: #2563eb; border-color: #2563eb; color: white; }
+  .mode-switch { display: flex; gap: 0.5rem; margin: 1.5rem 0; }
+  .mode-switch button { font: inherit; padding: 0.5rem 0.9rem; border-radius: 999px; border: 1px solid rgba(127,127,127,0.4); background: transparent; color: inherit; font-weight: 600; font-size: 0.85rem; cursor: pointer; }
+  .mode-switch button.active { background: #2563eb; border-color: #2563eb; color: white; }
+  form { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+  label { display: flex; flex-direction: column; gap: 0.35rem; font-weight: 600; font-size: 0.9rem; }
+  input, textarea { font: inherit; padding: 0.6rem 0.7rem; border-radius: 8px; border: 1px solid rgba(127,127,127,0.4); background: transparent; color: inherit; }
+  textarea { resize: vertical; min-height: 4.5rem; }
+  #paste-text { min-height: 12rem; }
+  .row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  .entry { border: 1px solid rgba(127,127,127,0.3); border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
+  .entry-footer { display: flex; justify-content: flex-end; }
+  .remove-btn { background: transparent; border: none; color: #cf222e; font-size: 0.85rem; font-weight: 600; cursor: pointer; padding: 0; }
+  .add-btn { background: transparent; border: 1px dashed rgba(127,127,127,0.5); border-radius: 8px; padding: 0.6rem; font-weight: 600; cursor: pointer; color: inherit; }
+  button[type="submit"] { font: inherit; padding: 0.8rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; font-weight: 600; cursor: pointer; margin-top: 0.5rem; }
+  button[type="submit"]:hover { background: #1d4ed8; }
+  .note { background: rgba(37,99,235,0.1); border: 1px solid rgba(37,99,235,0.3); border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.9rem; margin-bottom: 1rem; }
+  .error { background: rgba(207,34,46,0.1); border: 1px solid rgba(207,34,46,0.35); border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.9rem; margin-bottom: 1rem; color: #cf222e; }
+</style>
+</head>
+<body>
+  <div class="lang-switch">
+    {% for code in languages %}
+    <a href="/cv-builder?lang={{ code }}" class="{{ 'active' if code == lang else '' }}">{{ code.upper() }}</a>
+    {% endfor %}
+  </div>
+
+  <h1>{{ t('ui.cv.builder_title') }}</h1>
+  <p class="tagline">{{ t('ui.cv.tagline') }}</p>
+
+  <div class="mode-switch">
+    <button type="button" id="tab-manual" onclick="showTab('manual')">{{ t('ui.cv.mode_manual') }}</button>
+    <button type="button" id="tab-paste" onclick="showTab('paste')">{{ t('ui.cv.mode_paste') }}</button>
+  </div>
+
+  <div id="paste-mode">
+    <p class="tagline">{{ t('ui.cv.paste_intro') }}</p>
+    {% if extract_error %}<div class="error">{{ extract_error }}</div>{% endif %}
+    <form action="/cv-builder/from-text" method="post">
+      <input type="hidden" name="lang" value="{{ lang }}">
+      <label>{{ t('ui.cv.paste_text') }}
+        <textarea id="paste-text" name="text" required>{{ pasted_text or '' }}</textarea>
+      </label>
+      <label>{{ t('ui.cv.paste_model') }}
+        <input type="text" name="model_name" placeholder="e.g. deepseek/deepseek-chat">
+      </label>
+      <button type="submit">{{ t('ui.cv.paste_submit') }}</button>
+    </form>
+  </div>
+
+  <div id="manual-mode">
+    {% if profile %}<div class="note">{{ t('ui.cv.review_note') }}</div>{% endif %}
+    <form action="/cv-builder" method="post">
+      <input type="hidden" name="lang" value="{{ lang }}">
+
+      <label>{{ t('ui.cv.name') }}
+        <input type="text" name="name" value="{{ profile.name if profile else '' }}" required>
+      </label>
+      <label>{{ t('ui.cv.role') }}
+        <input type="text" name="role" value="{{ profile.role if profile and profile.role else '' }}">
+      </label>
+      <label>{{ t('ui.cv.summary') }}
+        <textarea name="summary">{{ profile.summary if profile and profile.summary else '' }}</textarea>
+      </label>
+
+      <div class="row-grid">
+        <label>{{ t('ui.cv.email') }}
+          <input type="email" name="email" value="{{ profile.contact.email if profile else '' }}" required>
+        </label>
+        <label>{{ t('ui.cv.phone') }}
+          <input type="text" name="phone" value="{{ profile.contact.phone if profile and profile.contact.phone else '' }}">
+        </label>
+      </div>
+      <div class="row-grid">
+        <label>{{ t('ui.cv.location') }}
+          <input type="text" name="location" value="{{ profile.contact.location if profile and profile.contact.location else '' }}">
+        </label>
+        <label>{{ t('ui.cv.links') }}
+          <input type="text" name="links" value="{{ profile.contact.links|join(', ') if profile else '' }}" placeholder="linkedin.com/in/..., github.com/...">
+        </label>
+      </div>
+
+      <h2>{{ t('ui.cv.experience_section') }}</h2>
+      <div id="experience-list"></div>
+      <button type="button" class="add-btn" onclick="addEntry('experience')">{{ t('ui.cv.add_experience') }}</button>
+
+      <h2>{{ t('ui.cv.education_section') }}</h2>
+      <div id="education-list"></div>
+      <button type="button" class="add-btn" onclick="addEntry('education')">{{ t('ui.cv.add_education') }}</button>
+
+      <label>{{ t('ui.cv.skills') }}
+        <input type="text" name="skills" value="{{ profile.skills|join(', ') if profile else '' }}" placeholder="Python, Go, PostgreSQL">
+      </label>
+      <label>{{ t('ui.cv.languages') }}
+        <input type="text" name="languages" value="{{ profile.languages|join(', ') if profile else '' }}" placeholder="English (native), Spanish (fluent)">
+      </label>
+
+      <button type="submit">{{ t('ui.cv.generate') }}</button>
+    </form>
+  </div>
+
+  <template id="experience-template">
+    <div class="entry">
+      <div class="row-grid">
+        <label>{{ t('ui.cv.exp_title') }}
+          <input type="text" name="exp_title">
+        </label>
+        <label>{{ t('ui.cv.exp_organization') }}
+          <input type="text" name="exp_organization">
+        </label>
+      </div>
+      <div class="row-grid">
+        <label>{{ t('ui.cv.exp_location') }}
+          <input type="text" name="exp_location">
+        </label>
+        <label>{{ t('ui.cv.exp_start') }} / {{ t('ui.cv.exp_end') }}
+          <span class="row-grid">
+            <input type="text" name="exp_start" placeholder="2021">
+            <input type="text" name="exp_end" placeholder="Present">
+          </span>
+        </label>
+      </div>
+      <label>{{ t('ui.cv.exp_bullets') }}
+        <textarea name="exp_bullets"></textarea>
+      </label>
+      <div class="entry-footer">
+        <button type="button" class="remove-btn" onclick="this.closest('.entry').remove()">{{ t('ui.cv.remove') }}</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="education-template">
+    <div class="entry">
+      <label>{{ t('ui.cv.edu_degree') }}
+        <input type="text" name="edu_degree">
+      </label>
+      <div class="row-grid">
+        <label>{{ t('ui.cv.edu_institution') }}
+          <input type="text" name="edu_institution">
+        </label>
+        <label>{{ t('ui.cv.edu_year') }}
+          <input type="text" name="edu_year" placeholder="2020">
+        </label>
+      </div>
+      <div class="entry-footer">
+        <button type="button" class="remove-btn" onclick="this.closest('.entry').remove()">{{ t('ui.cv.remove') }}</button>
+      </div>
+    </div>
+  </template>
+
+  <script>
+    const INITIAL_EXPERIENCE = {{ (profile.experience if profile else []) | tojson }};
+    const INITIAL_EDUCATION = {{ (profile.education if profile else []) | tojson }};
+
+    function addEntry(kind, data) {
+      const template = document.getElementById(kind + '-template');
+      const list = document.getElementById(kind + '-list');
+      const node = template.content.cloneNode(true);
+      if (data) {
+        node.querySelectorAll('[name]').forEach(el => {
+          const field = el.name.split('_').slice(1).join('_'); // "exp_title" -> "title"
+          if (field === 'bullets' && Array.isArray(data.bullets)) {
+            el.value = data.bullets.join('\n');
+          } else if (field in data && data[field] != null) {
+            el.value = data[field];
+          }
+        });
+      }
+      list.appendChild(node);
+    }
+
+    if (INITIAL_EXPERIENCE.length) {
+      INITIAL_EXPERIENCE.forEach(exp => addEntry('experience', exp));
+    } else {
+      addEntry('experience');
+    }
+    if (INITIAL_EDUCATION.length) {
+      INITIAL_EDUCATION.forEach(edu => addEntry('education', edu));
+    } else {
+      addEntry('education');
+    }
+
+    function showTab(tab) {
+      document.getElementById('manual-mode').style.display = tab === 'manual' ? 'block' : 'none';
+      document.getElementById('paste-mode').style.display = tab === 'paste' ? 'block' : 'none';
+      document.getElementById('tab-manual').classList.toggle('active', tab === 'manual');
+      document.getElementById('tab-paste').classList.toggle('active', tab === 'paste');
+    }
+    // Land on the paste tab after a failed extraction (so the error and the
+    // text they pasted stay in view); otherwise default to the manual form -
+    // including right after a successful extraction, so it can be reviewed.
+    showTab('{{ "paste" if extract_error else "manual" }}');
+  </script>
+</body>
+</html>
