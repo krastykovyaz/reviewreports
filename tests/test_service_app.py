@@ -185,6 +185,58 @@ def test_unsupported_kind_is_rejected(client):
     assert resp.status_code == 400
 
 
+# ---- PUBLIC_KINDS: restricting which kinds public routes accept ----------------
+#
+# code_review/app_review take a server-side directory path (or, for
+# code_review, a git URL) as input - this service is proxied straight
+# through to a public domain, so a deployment that doesn't want that surface
+# reachable sets PUBLIC_KINDS. Unset (the fixture's default, and every test
+# above) must keep every supported kind reachable - that's the regression
+# these guard against as much as the restriction itself.
+
+
+def test_public_kinds_unset_leaves_every_kind_reachable(client):
+    resp = client.get("/")
+    assert "code_review" in resp.text and "app_review" in resp.text
+    assert client.post("/reports", json={"url": "/etc", "kind": "app_review"}).status_code == 200
+
+
+def test_public_kinds_restricts_home_page_dropdown(client, monkeypatch):
+    monkeypatch.setattr(app_module, "PUBLIC_KINDS", {"website_audit"})
+    resp = client.get("/")
+    assert "website_audit" in resp.text
+    assert "code_review" not in resp.text
+    assert "app_review" not in resp.text
+
+
+def test_public_kinds_rejects_disallowed_kind_on_reports(client, monkeypatch):
+    monkeypatch.setattr(app_module, "PUBLIC_KINDS", {"website_audit"})
+    resp = client.post("/reports", json={"url": "/etc/passwd", "kind": "app_review"})
+    assert resp.status_code == 400
+
+
+def test_public_kinds_rejects_disallowed_kind_on_submit(client, monkeypatch):
+    monkeypatch.setattr(app_module, "PUBLIC_KINDS", {"website_audit"})
+    resp = client.post("/submit", data={"kind": "code_review", "input_value": "/etc"})
+    assert resp.status_code == 400
+
+
+def test_public_kinds_still_allows_the_allowed_kind(client, monkeypatch):
+    monkeypatch.setattr(app_module, "PUBLIC_KINDS", {"website_audit"})
+    resp = client.post("/reports", json={"url": "https://example.com", "kind": "website_audit"})
+    assert resp.status_code == 200
+
+
+def test_parse_public_kinds_splits_and_trims_commas():
+    assert app_module._parse_public_kinds("website_audit, resume_review") == {"website_audit", "resume_review"}
+
+
+def test_parse_public_kinds_unset_or_blank_means_unrestricted():
+    assert app_module._parse_public_kinds(None) is None
+    assert app_module._parse_public_kinds("") is None
+    assert app_module._parse_public_kinds("  ,  ") is None
+
+
 @pytest.mark.asyncio
 async def test_rendered_before_done_is_409(client):
     # Create the job record directly, without scheduling the background task,

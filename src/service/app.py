@@ -64,6 +64,32 @@ _KIND_LABEL_KEYS = {
 }
 _FILE_KINDS = {"resume_review", "presentation_review", "book_review"}
 
+# code_review/app_review accept a server-side directory path (or, for
+# code_review, a git URL) as input_value - fine for a trusted/internal
+# caller, but this service is proxied straight through to a public domain
+# (tsech.online/audit/), so left unrestricted a public visitor could ask for
+# a review of any path on the box (e.g. the directory holding .env) and read
+# the result back at a public /view/{id} link. PUBLIC_KINDS opts a
+# deployment into restricting which kinds the public routes (home page,
+# /submit, /reports) will accept; unset (the default, and every existing
+# test) leaves all of supported_kinds() reachable, matching behavior before
+# this existed. Sibling internal callers that don't go through these public
+# routes are unaffected - there are none today; generate_report() itself is
+# not gated.
+def _parse_public_kinds(value: Optional[str]) -> Optional[set]:
+    # A value that's present but parses to nothing (blank, or all commas) is
+    # treated the same as unset - "unrestricted" - rather than the empty set,
+    # which would silently reject every kind including website_audit itself.
+    parsed = {k.strip() for k in value.split(",") if k.strip()} if value else set()
+    return parsed or None
+
+
+PUBLIC_KINDS = _parse_public_kinds(os.getenv("PUBLIC_KINDS"))
+
+
+def _kind_allowed(kind: str) -> bool:
+    return kind in supported_kinds() and (PUBLIC_KINDS is None or kind in PUBLIC_KINDS)
+
 _UPLOAD_DIR = assemble_project_path("workdir/uploads")
 
 _store = JobStore(db_path="workdir/service/jobs.db")
@@ -128,7 +154,7 @@ async def health():
 
 @app.post("/reports", response_model=JobResponse)
 async def create_report(request: CreateReportRequest, background_tasks: BackgroundTasks):
-    if request.kind not in supported_kinds():
+    if not _kind_allowed(request.kind):
         raise HTTPException(status_code=400, detail=f"Unsupported report kind: {request.kind}. Supported: {supported_kinds()}")
 
     lang = normalize_lang(request.lang)
@@ -307,7 +333,7 @@ async def get_cv(cv_id: str):
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request, lang: str = "en"):
     lang = normalize_lang(lang)
-    kinds = {kind: t_chrome(key, lang) for kind, key in _KIND_LABEL_KEYS.items()}
+    kinds = {kind: t_chrome(key, lang) for kind, key in _KIND_LABEL_KEYS.items() if _kind_allowed(kind)}
     return _templates.TemplateResponse(
         request,
         "home.html",
@@ -330,7 +356,7 @@ async def submit(
     lang: str = Form("en"),
     file: Optional[UploadFile] = File(None),
 ):
-    if kind not in supported_kinds():
+    if not _kind_allowed(kind):
         raise HTTPException(status_code=400, detail=f"Unsupported report kind: {kind}")
     lang = normalize_lang(lang)
     kind_label = t_chrome(_KIND_LABEL_KEYS[kind], lang)
