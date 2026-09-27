@@ -4,23 +4,44 @@
 <meta charset="UTF-8">
 <title>{{ profile.name }} — CV</title>
 <style>
+  /* WeasyPrint (used for PDF export) treats content as print media by
+     default, so @media print below applies there automatically — the same
+     rendered HTML also works as an on-screen preview via @media screen,
+     with no separate "print mode" needed. */
+  @page { size: letter; margin: 0; }
   :root { --accent: #2563eb; --ink: #1a1d23; --muted: #5b6270; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #f2f3f5; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); padding: 24px; }
-  .page {
-    width: 440px;
-    margin: 0 auto;
-    background: #fff;
-    border-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
-    overflow: hidden;
-  }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); }
+  @media screen { body { background: #f2f3f5; padding: 24px; } }
+
+  .page { width: 440px; margin: 0 auto; background: #fff; overflow: hidden; }
+  @media screen { .page { border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06); } }
+  @media print { .page { width: 8.5in; margin: 0; } }
+
   /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
      scrollable — validated to fit a full one-page sample profile with room
      to spare; unusually long content can still clip. */
   .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
+  /* WeasyPrint silently ignores aspect-ratio entirely (confirmed via its
+     own warning output), so print mode needs an explicit height instead.
+     Also confirmed: even with this height set, overflow:hidden does NOT
+     stop WeasyPrint from paginating content that does not fit — a
+     too-long profile spills onto additional PDF pages rather than being
+     clipped there. That is only true for the PDF path; the on-screen
+     preview (a real browser, no pagination) does clip at one page as
+     described above. Prefer the safer PDF behavior (visible overflow) over
+     trying to force a hard clip that would silently lose real content. */
+  @media print { .doc { height: 11in; font-size: 22.3px; } }
 
-  .compact { padding: 18px 22px; font-family: "SF Mono", "Courier New", monospace; font-size: 10.5px; }
+  .compact { width: 440px; padding: 18px 22px; font-family: "SF Mono", "Courier New", monospace; font-size: 10.5px; }
+  /* Print output uses literal scaled values (×1.8545, matching 8.5in's
+     816px vs. the 440px this layout was screen-validated at), not a CSS
+     transform:scale — WeasyPrint was found to truncate overflowing content
+     under transform:scale when combined with a flex layout (confirmed
+     against .row below and against src/cv/templates/modern.html's sidebar);
+     literal values sidestep that whole bug class rather than relying on
+     transform working here. */
+  @media print { .compact { width: 8.5in; padding: 33.4px 40.8px; font-size: 19.5px; } }
   .compact .head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid var(--ink); padding-bottom: 8px; margin-bottom: 10px; }
   .compact .head .name { font-size: 15px; font-weight: 700; font-family: -apple-system, sans-serif; }
   .compact .head .contact { font-size: 9.5px; color: var(--muted); text-align: right; line-height: 1.5; }
@@ -33,6 +54,19 @@
   .compact .job-sub { color: var(--muted); font-size: 9.5px; margin-bottom: 2px; }
   .compact ul { margin: 0; padding-left: 14px; line-height: 1.45; }
   .compact .skills-line { line-height: 1.6; }
+
+  @media print {
+    .compact .head { border-bottom-width: 2.8px; padding-bottom: 14.8px; margin-bottom: 18.5px; }
+    .compact .head .name { font-size: 27.8px; }
+    .compact .head .contact { font-size: 17.6px; }
+    .compact h4 { font-size: 17.6px; margin: 22.3px 0 9.3px; }
+    .compact .summary { margin-bottom: 7.4px; }
+    .compact .row { gap: 18.5px; }
+    .compact .job { margin-bottom: 13px; }
+    .compact .job-head { font-size: 20.4px; }
+    .compact .job-sub { font-size: 17.6px; margin-bottom: 3.7px; }
+    .compact ul { padding-left: 26px; }
+  }
 </style>
 </head>
 <body>

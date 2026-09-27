@@ -4,24 +4,46 @@
 <meta charset="UTF-8">
 <title>{{ profile.name }} — CV</title>
 <style>
+  /* WeasyPrint (used for PDF export) treats content as print media by
+     default, so @media print below applies there automatically — the same
+     rendered HTML also works as an on-screen preview via @media screen,
+     with no separate "print mode" needed. */
+  @page { size: letter; margin: 0; }
   :root { --accent: #2563eb; --ink: #1a1d23; --muted: #5b6270; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #f2f3f5; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); padding: 24px; }
-  .page {
-    width: 440px;
-    margin: 0 auto;
-    background: #fff;
-    border-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
-    overflow: hidden;
-  }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); }
+  @media screen { body { background: #f2f3f5; padding: 24px; } }
+
+  .page { width: 440px; margin: 0 auto; background: #fff; overflow: hidden; }
+  @media screen { .page { border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06); } }
+  @media print { .page { width: 8.5in; margin: 0; } }
+
   /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
      scrollable — the layout below was validated to fit within this frame
      for a full one-page sample profile; unusually long content (many jobs,
      long bullets) can still clip, since fit depends on content length. */
   .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
+  /* WeasyPrint silently ignores aspect-ratio entirely (confirmed via its
+     own warning output), so print mode needs an explicit height instead.
+     Also confirmed: even with this height set, overflow:hidden does NOT
+     stop WeasyPrint from paginating content that does not fit — a
+     too-long profile spills onto additional PDF pages rather than being
+     clipped there. That is only true for the PDF path; the on-screen
+     preview (a real browser, no pagination) does clip at one page as
+     described above. Prefer the safer PDF behavior (visible overflow) over
+     trying to force a hard clip that would silently lose real content. */
+  @media print { .doc { height: 11in; font-size: 22.3px; } }
 
-  .modern { display: flex; height: 100%; }
+  .modern { display: flex; width: 440px; height: 569px; }
+  /* Print output uses literal scaled values below (×1.8545, matching 8.5in's
+     816px vs. the 440px this layout was screen-validated at) rather than a
+     CSS transform:scale on .modern — WeasyPrint was found to truncate a
+     flex/float/table multi-column layout's overflowing content when
+     transform:scale is combined with it (confirmed against plain,
+     non-flex content, which scales via transform correctly; this is
+     specific to multi-column layout mechanisms). Literal values sidestep
+     that bug entirely rather than working around it. */
+  @media print { .modern { width: 8.5in; height: 11in; } }
   .modern .side { width: 36%; background: #1e2330; color: #d7dbe6; padding: 18px 14px; }
   .modern .side .name { color: #fff; font-size: 17px; font-weight: 700; line-height: 1.25; }
   .modern .side .role { color: #8fb3ff; font-size: 11px; margin: 4px 0 15px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
@@ -36,6 +58,23 @@
   .modern .job-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; }
   .modern .job-sub { font-size: 11px; color: var(--muted); margin: 1px 0 4px; font-style: italic; }
   .modern .job ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.5; color: #333; }
+
+  @media print {
+    .modern .side { padding: 33.4px 26px; }
+    .modern .side .name { font-size: 31.5px; }
+    .modern .side .role { font-size: 20.4px; margin: 7.4px 0 27.8px; }
+    .modern .side h4 { font-size: 18.5px; margin: 24.1px 0 9.3px; }
+    .modern .side p, .modern .side li { font-size: 20.4px; margin: 0 0 5.6px; }
+    .modern .side ul { padding-left: 26px; }
+    .modern .main { padding: 27.8px 29.7px; }
+    .modern .main h4 { font-size: 20.4px; border-bottom-width: 3.7px; padding-bottom: 7.4px; margin: 0 0 16.7px; }
+    .modern .main section + section { margin-top: 18.5px; }
+    .modern .summary { font-size: 21.3px; }
+    .modern .job { margin-bottom: 13px; }
+    .modern .job-head { font-size: 22.3px; }
+    .modern .job-sub { font-size: 20.4px; margin: 1.9px 0 7.4px; }
+    .modern .job ul { padding-left: 29.7px; font-size: 20.4px; }
+  }
 </style>
 </head>
 <body>
