@@ -119,6 +119,27 @@ def test_get_rendered_unknown_cv_is_404(client):
     assert resp.status_code == 404
 
 
+def test_get_rendered_html_includes_og_meta_for_direct_sharing(client):
+    # People share a /cv/{id}.html link directly, not just the
+    # /cv-builder/{id} comparison page - it needs its own real preview card.
+    cv_id = client.post("/cv", json={**_SAMPLE_PAYLOAD, "template": "classic"}).json()["id"]
+    resp = client.get(f"/cv/{cv_id}.html", params={"template": "compact"})
+    assert resp.status_code == 200
+    assert '<meta property="og:title" content="Jordan Reyes — CV">' in resp.text
+    assert '<meta property="og:description" content="Senior Backend Engineer' in resp.text
+    assert '<meta property="og:image" content="https://tsech.online/logo.png">' in resp.text
+    # Reflects the actually-requested template, not the CV's stored default.
+    assert f'og:url" content="https://tsech.online/audit/cv/{cv_id}.html?template=compact">' in resp.text
+
+
+def test_get_rendered_markdown_has_no_og_meta(client):
+    # Meta injection only applies to the html branch; md/pdf are downloaded
+    # documents, not link-preview targets.
+    cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
+    resp = client.get(f"/cv/{cv_id}.md")
+    assert "og:title" not in resp.text
+
+
 # ---- Web flow (GET /cv-builder -> POST /cv-builder -> GET /cv-builder/{id}) ----
 
 _FORM_PAYLOAD = {
@@ -223,10 +244,31 @@ def test_cv_builder_submit_skips_blank_experience_and_education_rows(client):
 def test_cv_builder_result_page_shows_all_three_templates(client):
     resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=True)
     assert resp.status_code == 200
-    assert "Jordan Reyes" not in resp.text  # embedded via iframe src, not inlined
+    # The profile's name now appears in the page's own title/og:title (for a
+    # real link preview in Telegram/WhatsApp/Facebook), but the actual CV
+    # body - job history, etc. - is still only inside the iframes, never
+    # duplicated into the outer page.
+    assert 'og:title" content="Jordan Reyes' in resp.text
+    assert "Northwind Systems" not in resp.text
     for template in ("Modern", "Classic", "Compact"):
         assert template in resp.text
     assert "/cv/" in resp.text and ".pdf?template=" in resp.text
+
+
+def test_cv_builder_result_page_share_meta_includes_role(client):
+    resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=True)
+    assert 'og:title" content="Jordan Reyes — CV"' in resp.text
+    assert 'og:description" content="Senior Backend Engineer' in resp.text
+    assert 'og:image" content="https://tsech.online/logo.png"' in resp.text
+    assert f'og:url" content="https://tsech.online/audit/cv-builder/' in resp.text
+
+
+def test_cv_builder_result_page_share_meta_falls_back_without_role_or_summary(client):
+    data = {k: v for k, v in _FORM_PAYLOAD.items() if k != "role"}
+    del data["summary"]
+    resp = client.post("/cv-builder", data=data, follow_redirects=True)
+    assert 'og:title" content="Jordan Reyes — CV"' in resp.text
+    assert 'og:description" content="Create with tsech.online"' in resp.text
 
 
 def test_cv_builder_result_page_localizes(client):

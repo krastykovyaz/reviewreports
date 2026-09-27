@@ -22,8 +22,10 @@ mirroring /submit's redirect pattern) -> GET /cv-builder/{id} (all three
 templates side by side, pick one, download).
 """
 
+import html
 import json
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -271,6 +273,12 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
 
     if output_format == "html":
         rendered = render_cv_html(profile, chosen_template)
+        # Also give a direct link to one of these documents (people share
+        # them as-is, not just the /cv-builder/{id} comparison page) a real
+        # preview card instead of a blank one.
+        title, description = _build_cv_share_meta(profile, "en")
+        canonical_url = f"https://tsech.online/audit/cv/{cv_id}.html?template={chosen_template}"
+        rendered = _inject_og_meta(rendered, title=title, description=description, url=canonical_url)
     elif output_format == "pdf":
         try:
             rendered = render_cv_pdf(profile, chosen_template)
@@ -368,6 +376,44 @@ def _build_share_meta(job: dict, report: Optional[dict], lang: str) -> tuple[str
     verdict = report.get("verdict") or ""
     description = f"{score}/10 — {verdict}" if score is not None else (verdict or t_chrome("ui.ready_title", lang))
     return title, description
+
+
+def _build_cv_share_meta(profile: CVProfile, lang: str) -> tuple[str, str]:
+    """og:title / og:description for a shared CV link — same idea as
+    _build_share_meta above, applied to the CV builder's own pages."""
+    label = t_chrome("ui.cv.share_label", lang)
+    title = f"{profile.name} — {label}" if profile.name else label
+    create_with = f"{t_chrome('ui.create_with', lang)} tsech.online"
+    highlight = profile.role or profile.summary
+    description = f"{highlight} · {create_with}" if highlight else create_with
+    return title, description
+
+
+_HEAD_OPEN_RE = re.compile(r"<head>", re.IGNORECASE)
+
+
+def _inject_og_meta(rendered_html: str, *, title: str, description: str, url: str) -> str:
+    """Splices og:/twitter: meta tags into an already-rendered HTML document's
+    <head> — used for the CV templates' own standalone documents (each is a
+    full page rendered by src/cv/render.py, not a Jinja template this service
+    controls directly), so a link to one of them also gets a real preview
+    card in Telegram/WhatsApp/Facebook instead of a blank one. Image is the
+    static tsech logo, matching /view/{id}'s existing pattern, rather than a
+    per-CV screenshot."""
+    tags = (
+        '<meta property="og:type" content="website">'
+        '<meta property="og:site_name" content="tsech">'
+        f'<meta property="og:title" content="{html.escape(title)}">'
+        f'<meta property="og:description" content="{html.escape(description)}">'
+        '<meta property="og:image" content="https://tsech.online/logo.png">'
+        f'<meta property="og:url" content="{html.escape(url)}">'
+        '<meta name="twitter:card" content="summary">'
+        f'<meta name="twitter:title" content="{html.escape(title)}">'
+        f'<meta name="twitter:description" content="{html.escape(description)}">'
+        '<meta name="twitter:image" content="https://tsech.online/logo.png">'
+    )
+    injected, count = _HEAD_OPEN_RE.subn(f"<head>{tags}", rendered_html, count=1)
+    return injected if count else rendered_html
 
 
 @app.get("/view/{job_id}", response_class=HTMLResponse)
@@ -497,9 +543,15 @@ async def cv_builder_result(request: Request, cv_id: str, lang: str = "en"):
     if row is None:
         raise HTTPException(status_code=404, detail="CV not found")
     lang = normalize_lang(lang)
+    profile = await _cv_store.get_profile(cv_id)
     template_labels = {name: t_chrome(f"ui.cv.template.{name}", lang) for name in CV_TEMPLATES}
+    meta_title, meta_description = _build_cv_share_meta(profile, lang)
     return _templates.TemplateResponse(
         request,
         "cv_result.html",
-        {"lang": lang, "cv_id": cv_id, "cv_templates": template_labels, "t": lambda key, **kw: t_chrome(key, lang, **kw)},
+        {
+            "lang": lang, "cv_id": cv_id, "cv_templates": template_labels,
+            "meta_title": meta_title, "meta_description": meta_description,
+            "t": lambda key, **kw: t_chrome(key, lang, **kw),
+        },
     )

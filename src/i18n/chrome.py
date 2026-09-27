@@ -137,6 +137,7 @@ _CHROME = {
     "ui.cv.remove": {"en": "Remove", "ru": "Удалить", "fr": "Supprimer"},
     "ui.cv.generate": {"en": "Generate CV", "ru": "Сформировать резюме", "fr": "Générer le CV"},
     "ui.cv.result_title": {"en": "Compare templates", "ru": "Сравнение шаблонов", "fr": "Comparer les modèles"},
+    "ui.cv.share_label": {"en": "CV", "ru": "Резюме", "fr": "CV"},
     "ui.cv.build_another": {"en": "Build another CV", "ru": "Создать другое резюме", "fr": "Créer un autre CV"},
     "ui.cv.download_md_note": {"en": "Markdown is the same across templates:", "ru": "Markdown-версия одинакова для всех шаблонов:", "fr": "La version Markdown est identique pour tous les modèles :"},
     "ui.cv.template.modern": {"en": "Modern", "ru": "Модерн", "fr": "Moderne"},
