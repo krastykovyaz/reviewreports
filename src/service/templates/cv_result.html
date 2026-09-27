@@ -18,19 +18,19 @@
 </style>
 </head>
 <body>
-  <a class="back" href="/cv-builder?lang={{ lang }}">&larr; {{ t('ui.cv.build_another') }}</a>
+  <a class="back" href="/audit/cv-builder?lang={{ lang }}">&larr; {{ t('ui.cv.build_another') }}</a>
 
   <h1>{{ t('ui.cv.result_title') }}</h1>
-  <p class="md-note">{{ t('ui.cv.download_md_note') }} <a href="/cv/{{ cv_id }}.md">{{ t('ui.download_md') }}</a></p>
+  <p class="md-note">{{ t('ui.cv.download_md_note') }} <a href="/audit/cv/{{ cv_id }}.md">{{ t('ui.download_md') }}</a></p>
 
   <div class="gallery">
     {% for value, label in cv_templates.items() %}
     <div class="card">
       <h3>{{ label }}</h3>
-      <iframe src="/cv/{{ cv_id }}.html?template={{ value }}" title="{{ label }}"></iframe>
+      <iframe src="/audit/cv/{{ cv_id }}.html?template={{ value }}" title="{{ label }}"></iframe>
       <div class="downloads">
-        <a href="/cv/{{ cv_id }}.pdf?template={{ value }}">{{ t('ui.download_pdf') }}</a>
-        <a href="/cv/{{ cv_id }}.html?template={{ value }}">{{ t('ui.download_html') }}</a>
+        <a href="/audit/cv/{{ cv_id }}.pdf?template={{ value }}">{{ t('ui.download_pdf') }}</a>
+        <a href="/audit/cv/{{ cv_id }}.html?template={{ value }}">{{ t('ui.download_html') }}</a>
       </div>
     </div>
     {% endfor %}

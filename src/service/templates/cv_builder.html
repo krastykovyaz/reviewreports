@@ -35,7 +35,7 @@
 <body>
   <div class="lang-switch">
     {% for code in languages %}
-    <a href="/cv-builder?lang={{ code }}" class="{{ 'active' if code == lang else '' }}">{{ code.upper() }}</a>
+    <a href="/audit/cv-builder?lang={{ code }}" class="{{ 'active' if code == lang else '' }}">{{ code.upper() }}</a>
     {% endfor %}
   </div>
 
@@ -50,7 +50,7 @@
   <div id="paste-mode">
     <p class="tagline">{{ t('ui.cv.paste_intro') }}</p>
     {% if extract_error %}<div class="error">{{ extract_error }}</div>{% endif %}
-    <form action="/cv-builder/from-text" method="post">
+    <form action="/audit/cv-builder/from-text" method="post">
       <input type="hidden" name="lang" value="{{ lang }}">
       <label>{{ t('ui.cv.paste_text') }}
         <textarea id="paste-text" name="text" required>{{ pasted_text or '' }}</textarea>
@@ -64,7 +64,7 @@
 
   <div id="manual-mode">
     {% if profile %}<div class="note">{{ t('ui.cv.review_note') }}</div>{% endif %}
-    <form action="/cv-builder" method="post">
+    <form action="/audit/cv-builder" method="post">
       <input type="hidden" name="lang" value="{{ lang }}">
 
       <label>{{ t('ui.cv.name') }}
