@@ -136,6 +136,15 @@ _CHROME = {
     "ui.cv.template.modern": {"en": "Modern", "ru": "Модерн", "fr": "Moderne"},
     "ui.cv.template.classic": {"en": "Classic", "ru": "Классический", "fr": "Classique"},
     "ui.cv.template.compact": {"en": "Compact", "ru": "Компактный", "fr": "Compact"},
+
+    "ui.cv.mode_manual": {"en": "Fill in manually", "ru": "Заполнить вручную", "fr": "Remplir manuellement"},
+    "ui.cv.mode_paste": {"en": "Paste your info instead", "ru": "Или вставьте информацию о себе", "fr": "Ou collez vos informations"},
+    "ui.cv.paste_intro": {"en": "Paste anything about yourself — a rough draft, your LinkedIn \"About\" text, plain notes — and a model will organize it into the form below for you to review.", "ru": "Вставьте что угодно о себе — черновик, текст из раздела «Обо мне» в LinkedIn, обычные заметки — модель организует это в форму ниже, а вы сможете всё проверить.", "fr": "Collez n'importe quoi vous concernant — une ébauche, votre texte « À propos » LinkedIn, de simples notes — un modèle l'organisera dans le formulaire ci-dessous pour que vous puissiez le vérifier."},
+    "ui.cv.paste_text": {"en": "About you", "ru": "О вас", "fr": "À propos de vous"},
+    "ui.cv.paste_model": {"en": "Model (required to extract from text)", "ru": "Модель (нужна для извлечения из текста)", "fr": "Modèle (requis pour extraire le texte)"},
+    "ui.cv.paste_submit": {"en": "Generate from text", "ru": "Сформировать из текста", "fr": "Générer à partir du texte"},
+    "ui.cv.extract_failed": {"en": "Could not extract a CV from that text. Check the model name is correct and configured on this server, or fill in the form manually below.", "ru": "Не удалось извлечь резюме из текста. Проверьте, что название модели верно и она настроена на сервере, либо заполните форму вручную ниже.", "fr": "Impossible d'extraire un CV à partir de ce texte. Vérifiez que le nom du modèle est correct et configuré sur ce serveur, ou remplissez le formulaire manuellement ci-dessous."},
+    "ui.cv.review_note": {"en": "Extracted from your text — review and correct anything before generating.", "ru": "Извлечено из вашего текста — проверьте и исправьте всё необходимое перед созданием.", "fr": "Extrait de votre texte — vérifiez et corrigez si nécessaire avant de générer."},
 }
 
 t_chrome = make_translator(_CHROME)

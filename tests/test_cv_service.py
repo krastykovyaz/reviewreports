@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.service.app as app_module
+from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.service.cv_store import CVStore
 
 _SAMPLE_PAYLOAD = {
@@ -238,3 +239,55 @@ def test_cv_builder_result_page_localizes(client):
 def test_cv_builder_result_page_unknown_id_is_404(client):
     resp = client.get("/cv-builder/does-not-exist")
     assert resp.status_code == 404
+
+
+# ---- Paste-your-info mode (POST /cv-builder/from-text) ------------------------
+
+
+def test_from_text_prefills_manual_form_on_success(client, monkeypatch):
+    profile = CVProfile(
+        name="Jordan Reyes",
+        role="Senior Backend Engineer",
+        contact=Contact(email="jordan.reyes@email.com"),
+        experience=[Experience(title="Senior Backend Engineer", organization="Northwind Systems", start="2021", end="Present", bullets=["Redesigned the payments pipeline."])],
+        education=[Education(degree="B.S. Computer Science", institution="UC San Diego", year="2016")],
+        skills=["Python", "Go"],
+    )
+
+    async def fake_extract(text, model_name):
+        assert model_name == "deepseek/deepseek-chat"
+        return profile
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv-builder/from-text", data={"text": "Jordan Reyes is a senior backend engineer..."})
+    assert resp.status_code == 200
+    assert 'value="Jordan Reyes"' in resp.text
+    assert 'value="jordan.reyes@email.com"' in resp.text
+    assert "Northwind Systems" in resp.text  # seeded into the experience row via JS init data
+    assert "review and correct" in resp.text.lower() or "Extracted from your text" in resp.text
+
+
+def test_from_text_uses_provided_model_name(client, monkeypatch):
+    async def fake_extract(text, model_name):
+        assert model_name == "openai/gpt-4o"
+        return CVProfile(name="Alex Kim", contact=Contact(email="alex@example.com"))
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv-builder/from-text", data={"text": "some bio", "model_name": "openai/gpt-4o"})
+    assert resp.status_code == 200
+
+
+def test_from_text_shows_error_on_extraction_failure(client, monkeypatch):
+    async def fake_extract(text, model_name):
+        return None
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv-builder/from-text", data={"text": "unparseable garbage"})
+    assert resp.status_code == 422
+    assert "Could not extract a CV" in resp.text
+    assert "unparseable garbage" in resp.text  # pasted text preserved for retry
+
+
+def test_from_text_requires_text(client):
+    resp = client.post("/cv-builder/from-text", data={})
+    assert resp.status_code == 422

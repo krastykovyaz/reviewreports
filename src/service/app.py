@@ -33,9 +33,11 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from src.cv.extract import extract_cv_profile
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
 from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.i18n import SUPPORTED_LANGUAGES, normalize_lang, t_chrome
+from src.model import model_manager
 from src.report.render import RENDERERS
 from src.report.schema import Report
 from src.review.generate import generate_report, supported_kinds
@@ -48,6 +50,7 @@ _EXTENSION_TO_FORMAT = {"md": "markdown", "html": "html", "tex": "latex", "pdf":
 _BINARY_FORMATS = {"pdf"}
 
 _CV_EXTENSION_TO_FORMAT = {"html": "html", "pdf": "pdf", "md": "markdown"}
+_DEFAULT_CV_EXTRACTION_MODEL = "deepseek/deepseek-chat"
 
 _KIND_LABEL_KEYS = {
     "website_audit": "ui.kind.website_audit",
@@ -71,6 +74,11 @@ async def lifespan(app: FastAPI):
     await _store.init()
     await _cv_store.init()
     os.makedirs(_UPLOAD_DIR, exist_ok=True)
+    # Without this, every LLM-dependent pillar/feature across every kind (and
+    # CV extraction) fails at call time with "Model X not found. Available
+    # models: []" - model_manager's registry is only populated by this call,
+    # and nothing else in the service was triggering it.
+    await model_manager.initialize()
     yield
 
 
@@ -292,14 +300,35 @@ async def view_report(request: Request, job_id: str):
 # ---- CV builder web flow -------------------------------------------------------
 
 
-@app.get("/cv-builder", response_class=HTMLResponse)
-async def cv_builder_form(request: Request, lang: str = "en"):
-    lang = normalize_lang(lang)
+def _render_cv_builder_form(request: Request, lang: str, *, profile: Optional[CVProfile] = None, extract_error: Optional[str] = None, pasted_text: str = "", status_code: int = 200) -> HTMLResponse:
     return _templates.TemplateResponse(
         request,
         "cv_builder.html",
-        {"lang": lang, "languages": SUPPORTED_LANGUAGES, "t": lambda key, **kw: t_chrome(key, lang, **kw)},
+        {
+            "lang": lang,
+            "languages": SUPPORTED_LANGUAGES,
+            "t": lambda key, **kw: t_chrome(key, lang, **kw),
+            "profile": profile.model_dump() if profile else None,
+            "extract_error": extract_error,
+            "pasted_text": pasted_text,
+        },
+        status_code=status_code,
     )
+
+
+@app.get("/cv-builder", response_class=HTMLResponse)
+async def cv_builder_form(request: Request, lang: str = "en"):
+    lang = normalize_lang(lang)
+    return _render_cv_builder_form(request, lang)
+
+
+@app.post("/cv-builder/from-text", response_class=HTMLResponse)
+async def cv_builder_from_text(request: Request, text: str = Form(...), model_name: str = Form(""), lang: str = Form("en")):
+    lang = normalize_lang(lang)
+    profile = await extract_cv_profile(text.strip(), model_name.strip() or _DEFAULT_CV_EXTRACTION_MODEL)
+    if profile is None:
+        return _render_cv_builder_form(request, lang, extract_error=t_chrome("ui.cv.extract_failed", lang), pasted_text=text, status_code=422)
+    return _render_cv_builder_form(request, lang, profile=profile)
 
 
 def _split_csv(value: str) -> list:
