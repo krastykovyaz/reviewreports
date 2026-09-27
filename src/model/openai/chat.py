@@ -286,9 +286,15 @@ class ChatOpenAI(BaseModel):
         Returns:
             ChatCompletion object
         """
-        print(f"[DEBUG] Calling model: {self.model}")
-        print(f"[DEBUG] Base URL: {self.base_url}")
-        print(f"[DEBUG] Params: {params}")
+        # Was print() - flooded journald unconditionally on every call (39
+        # lines/day observed in production) and, worse, printed the full
+        # request params unfiltered, which for this call is the actual CV/
+        # audit-page text handed to the model - not a secret today, but the
+        # wrong default for something that could carry one later. logger.debug
+        # honors the configured log level instead of always firing.
+        logger.debug(f"| Calling model: {self.model}")
+        logger.debug(f"| Base URL: {self.base_url}")
+        logger.debug(f"| Params: {params}")
         client = self.get_client()
         response = await client.chat.completions.create(
             model=self.model,

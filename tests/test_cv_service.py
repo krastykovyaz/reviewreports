@@ -576,3 +576,41 @@ def test_edit_cv_rejects_overly_long_instructions(client):
     created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
     resp = client.post(f"/cv/{created['id']}/edit", json={"instructions": "a" * 2_001, "edit_token": created["edit_token"]})
     assert resp.status_code == 422
+
+
+# ---- Field length limits on POST /cv itself ------------------------------------
+#
+# Unlike /cv/from-text and /edit, POST /cv never touches an LLM - these bound
+# storage/render size on a public, unmetered endpoint rather than model cost.
+
+
+def test_create_cv_rejects_overly_long_name(client):
+    resp = client.post("/cv", json={**_SAMPLE_PAYLOAD, "name": "a" * 201})
+    assert resp.status_code == 422
+
+
+def test_create_cv_rejects_overly_long_summary(client):
+    resp = client.post("/cv", json={**_SAMPLE_PAYLOAD, "summary": "a" * 5_001})
+    assert resp.status_code == 422
+
+
+def test_create_cv_rejects_too_many_skills(client):
+    resp = client.post("/cv", json={**_SAMPLE_PAYLOAD, "skills": [f"skill{i}" for i in range(101)]})
+    assert resp.status_code == 422
+
+
+def test_create_cv_rejects_too_many_experience_entries(client):
+    row = {"title": "Engineer", "organization": "Co", "start": "2020"}
+    resp = client.post("/cv", json={**_SAMPLE_PAYLOAD, "experience": [row] * 51})
+    assert resp.status_code == 422
+
+
+def test_create_cv_accepts_a_realistic_full_profile(client):
+    # The limits above shouldn't be so tight they reject a real, detailed CV.
+    resp = client.post("/cv", json={
+        **_SAMPLE_PAYLOAD,
+        "summary": "a" * 4000,
+        "skills": [f"skill{i}" for i in range(40)],
+        "experience": [{"title": "Engineer", "organization": "Co", "start": "2020", "bullets": ["did things"] * 10}] * 10,
+    })
+    assert resp.status_code == 200
