@@ -22,6 +22,7 @@ mirroring /submit's redirect pattern) -> GET /cv-builder/{id} (all three
 templates side by side, pick one, download).
 """
 
+import asyncio
 import html
 import json
 import os
@@ -33,7 +34,7 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.cv.extract import edit_cv_profile, extract_cv_profile
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
@@ -94,6 +95,37 @@ _UPLOAD_DIR = assemble_project_path("workdir/uploads")
 
 _store = JobStore(db_path="workdir/service/jobs.db")
 _cv_store = CVStore(db_path="workdir/service/cv.db")
+
+# Concurrency gates: this service has no auth and (deliberately, see
+# PUBLIC_KINDS above) very little else standing between a public request and
+# an expensive operation - a website_audit launches a headless Chromium
+# (~300MB RAM each), and CV create/edit is a paid LLM call. Unbounded, a
+# burst of requests (accidental or not) either OOMs the box or runs up a
+# model bill. These reject fast (503) once full rather than queuing
+# silently, which would just delay the same resource exhaustion instead of
+# preventing it. Separate gates because they bound different resources - an
+# audit given a model_name may also call an LLM internally, but that's
+# amortized inside the one Chromium-holding slot already, not a second
+# thing to queue behind the CV pool for.
+_AUDIT_CONCURRENCY = int(os.getenv("AUDIT_MAX_CONCURRENT", "2"))
+_LLM_CONCURRENCY = int(os.getenv("CV_MAX_CONCURRENT", "3"))
+_audit_gate = asyncio.Semaphore(_AUDIT_CONCURRENCY)
+_llm_gate = asyncio.Semaphore(_LLM_CONCURRENCY)
+
+
+class ServerBusy(Exception):
+    pass
+
+
+async def _acquire_or_reject(gate: asyncio.Semaphore) -> None:
+    """Raises ServerBusy instead of waiting when the gate is already full.
+    Checking .locked() and then awaiting acquire() with no other await in
+    between is safe under asyncio's single-threaded cooperative scheduling -
+    nothing else can steal the slot between the check and the guaranteed-
+    immediate acquire, so this never actually blocks the caller."""
+    if gate.locked():
+        raise ServerBusy()
+    await gate.acquire()
 _templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 
@@ -136,12 +168,24 @@ def _job_response(job: dict) -> JobResponse:
 
 
 async def _run_job(job_id: str, kind: str, url: str, model_name: Optional[str], lang: str) -> None:
-    await _store.mark_running(job_id)
     try:
-        report = await generate_report(kind=kind, input=url, model_name=model_name, lang=lang)
-        await _store.mark_done(job_id, report.model_dump(mode="json"))
-    except Exception as exc:  # noqa: BLE001 - persist any failure onto the job record
-        await _store.mark_failed(job_id, str(exc))
+        await _acquire_or_reject(_audit_gate)
+    except ServerBusy:
+        # The job record already exists (created before this background task
+        # was scheduled) and the client is polling it, so "busy" has to be
+        # reported through that record rather than an HTTP response - there
+        # isn't one to give anymore by the time this runs.
+        await _store.mark_failed(job_id, "Server is busy with other checks right now - please try again in a minute.")
+        return
+    try:
+        await _store.mark_running(job_id)
+        try:
+            report = await generate_report(kind=kind, input=url, model_name=model_name, lang=lang)
+            await _store.mark_done(job_id, report.model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001 - persist any failure onto the job record
+            await _store.mark_failed(job_id, str(exc))
+    finally:
+        _audit_gate.release()
 
 
 # ---- JSON API ----------------------------------------------------------------
@@ -237,7 +281,10 @@ async def create_cv(request: CreateCVRequest):
 
 
 class CreateCVFromTextRequest(BaseModel):
-    text: str
+    # Bounds the size of what gets sent to the model on an unauthenticated,
+    # unmetered endpoint - far beyond any real resume/bio, well under
+    # nginx's request-body cap.
+    text: str = Field(..., max_length=20_000)
     model_name: Optional[str] = None
     template: str = "modern"
 
@@ -253,7 +300,14 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
     if not text:
         raise HTTPException(status_code=422, detail="text is empty")
 
-    profile = await extract_cv_profile(text, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+    try:
+        await _acquire_or_reject(_llm_gate)
+    except ServerBusy:
+        raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
+    try:
+        profile = await extract_cv_profile(text, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+    finally:
+        _llm_gate.release()
     if profile is None:
         raise HTTPException(status_code=422, detail="Could not extract a CV from that text")
 
@@ -262,7 +316,7 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
 
 
 class EditCVRequest(BaseModel):
-    instructions: str
+    instructions: str = Field(..., max_length=2_000)
     model_name: Optional[str] = None
     edit_token: str
 
@@ -286,8 +340,15 @@ async def edit_cv(cv_id: str, request: EditCVRequest):
     if not instructions:
         raise HTTPException(status_code=422, detail="instructions is empty")
 
-    current = await _cv_store.get_profile(cv_id)
-    revised = await edit_cv_profile(current, instructions, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+    try:
+        await _acquire_or_reject(_llm_gate)
+    except ServerBusy:
+        raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
+    try:
+        current = await _cv_store.get_profile(cv_id)
+        revised = await edit_cv_profile(current, instructions, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+    finally:
+        _llm_gate.release()
     if revised is None:
         raise HTTPException(status_code=422, detail="Could not apply that change")
 

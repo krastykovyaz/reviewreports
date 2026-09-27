@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -524,3 +526,53 @@ def test_edit_cv_a_cvs_own_token_does_not_work_on_a_different_cv(client, monkeyp
     monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
     resp = client.post(f"/cv/{created_b['id']}/edit", json={"instructions": "add a skill", "edit_token": created_a["edit_token"]})
     assert resp.status_code == 403
+
+
+# ---- LLM concurrency gate + input-length caps ----------------------------------
+#
+# Unlike POST /cv, /cv/from-text and /cv/{id}/edit are paid LLM calls on an
+# unauthenticated endpoint - both are bounded the same way audits are.
+
+
+def test_cv_from_text_returns_503_when_llm_gate_is_full(client, monkeypatch):
+    monkeypatch.setattr(app_module, "_llm_gate", asyncio.Semaphore(1))
+    asyncio.new_event_loop().run_until_complete(app_module._llm_gate.acquire())
+    try:
+        resp = client.post("/cv/from-text", json={"text": "Jordan Reyes, jordan@example.com"})
+        assert resp.status_code == 503
+    finally:
+        app_module._llm_gate.release()
+
+
+def test_edit_cv_returns_503_when_llm_gate_is_full(client, monkeypatch):
+    created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
+    monkeypatch.setattr(app_module, "_llm_gate", asyncio.Semaphore(1))
+    asyncio.new_event_loop().run_until_complete(app_module._llm_gate.acquire())
+    try:
+        resp = client.post(f"/cv/{created['id']}/edit", json={"instructions": "add a skill", "edit_token": created["edit_token"]})
+        assert resp.status_code == 503
+    finally:
+        app_module._llm_gate.release()
+
+
+def test_cv_from_text_releases_the_gate_after_finishing(client, monkeypatch):
+    monkeypatch.setattr(app_module, "_llm_gate", asyncio.Semaphore(1))
+
+    async def fake_extract(text, model_name):
+        return CVProfile(name="X", contact=Contact(email="x@example.com"))
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    resp = client.post("/cv/from-text", json={"text": "some bio"})
+    assert resp.status_code == 200
+    assert not app_module._llm_gate.locked()  # released, not leaked
+
+
+def test_cv_from_text_rejects_overly_long_text(client):
+    resp = client.post("/cv/from-text", json={"text": "a" * 20_001})
+    assert resp.status_code == 422
+
+
+def test_edit_cv_rejects_overly_long_instructions(client):
+    created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
+    resp = client.post(f"/cv/{created['id']}/edit", json={"instructions": "a" * 2_001, "edit_token": created["edit_token"]})
+    assert resp.status_code == 422

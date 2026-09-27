@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -193,6 +195,47 @@ def test_unknown_job_is_404(client):
 def test_unsupported_kind_is_rejected(client):
     resp = client.post("/reports", json={"url": "https://example.com", "kind": "video_review"})
     assert resp.status_code == 400
+
+
+# ---- Concurrency gate: bounding how many audits can run at once ---------------
+#
+# This service has no auth and each website_audit launches a headless
+# Chromium (~300MB RAM); unbounded, a burst of submissions (accidental or
+# not) can OOM the box. The gate rejects fast rather than queuing, since
+# queuing would just delay the same exhaustion rather than prevent it.
+
+
+@pytest.mark.asyncio
+async def test_acquire_or_reject_raises_once_the_gate_is_full():
+    gate = asyncio.Semaphore(1)
+    await app_module._acquire_or_reject(gate)  # takes the only slot
+    with pytest.raises(app_module.ServerBusy):
+        await app_module._acquire_or_reject(gate)
+    gate.release()
+    await app_module._acquire_or_reject(gate)  # slot freed, no longer raises
+    gate.release()
+
+
+@pytest.mark.asyncio
+async def test_run_job_marks_failed_when_the_audit_gate_is_full(client, monkeypatch):
+    monkeypatch.setattr(app_module, "_audit_gate", asyncio.Semaphore(1))
+    await app_module._audit_gate.acquire()  # simulate another audit already running
+    try:
+        job_id = await app_module._store.create_job(kind="website_audit", subject="https://example.com")
+        await app_module._run_job(job_id, "website_audit", "https://example.com", None, "en")
+        job = await app_module._store.get_job(job_id)
+        assert job["status"] == "failed"
+        assert "busy" in job["error"].lower()
+    finally:
+        app_module._audit_gate.release()
+
+
+@pytest.mark.asyncio
+async def test_run_job_releases_the_gate_after_finishing(client, monkeypatch):
+    monkeypatch.setattr(app_module, "_audit_gate", asyncio.Semaphore(1))
+    job_id = await app_module._store.create_job(kind="website_audit", subject="https://example.com")
+    await app_module._run_job(job_id, "website_audit", "https://example.com", None, "en")
+    assert not app_module._audit_gate.locked()  # released, not leaked
 
 
 # ---- PUBLIC_KINDS: restricting which kinds public routes accept ----------------
