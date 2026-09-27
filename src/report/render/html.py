@@ -30,6 +30,13 @@ _TEMPLATE_SRC = """\
   .section-title { margin-top: 2rem; }
   ol.recommendations li { margin-bottom: 0.5rem; }
   .small { font-size: 0.9rem; color: var(--na); }
+  .tsech-footer {
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line);
+    font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+    font-size: 12px; color: #4a4a4a; text-decoration: none;
+  }
+  .tsech-footer strong { color: #1a1a1a; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -102,6 +109,12 @@ _TEMPLATE_SRC = """\
   <h2 class="section-title">{{ t('report.limitations') }}</h2>
   <p class="small">{{ report.limitations }}</p>
   {% endif %}
+
+  {% if include_footer %}
+  <a class="tsech-footer" href="https://tsech.online" target="_blank" rel="noopener">
+    <span>{{ t('ui.create_with') }}</span><strong>tsech.online</strong>
+  </a>
+  {% endif %}
 </body>
 </html>
 """
@@ -110,7 +123,10 @@ _env = Environment(autoescape=select_autoescape(["html"]))
 _template = _env.from_string(_TEMPLATE_SRC)
 
 
-def render_html(report: Report) -> str:
+def render_html(report: Report, include_footer: bool = True) -> str:
+    """include_footer=False is used when the report is embedded in a page
+    that already shows its own single, page-level "Create with tsech.online"
+    footer (e.g. reviewreports' own /view/{id}) — avoids showing it twice."""
     lang = report.meta.lang
     grade = report.grade if report.grade != "N/A" else t_chrome("report.na_value", lang)
     return _template.render(
@@ -122,4 +138,5 @@ def render_html(report: Report) -> str:
         t=lambda key, **kw: t_chrome(key, lang, **kw),
         status_label=lambda s: t_chrome(f"status.{s.value}", lang),
         score=lambda s: f"{s}/10" if s is not None else t_chrome("report.na_value", lang),
+        include_footer=include_footer,
     )

@@ -13,9 +13,12 @@ async def test_create_and_get_roundtrips_profile(tmp_path):
     store = CVStore(db_path=str(tmp_path / "cv.db"))
     await store.init()
 
-    cv_id = await store.create(_sample_profile(), template="modern")
+    cv_id, edit_token = await store.create(_sample_profile(), template="modern")
+    assert len(edit_token) >= 16
     row = await store.get(cv_id)
     assert row["template"] == "modern"
+    assert store.verify_edit_token(row, edit_token)
+    assert not store.verify_edit_token(row, "wrong")
 
     profile = await store.get_profile(cv_id)
     assert profile.name == "Jordan Reyes"
@@ -35,5 +38,5 @@ async def test_init_is_idempotent(tmp_path):
     store = CVStore(db_path=str(tmp_path / "cv.db"))
     await store.init()
     await store.init()
-    cv_id = await store.create(_sample_profile(), template="classic")
+    cv_id, _edit_token = await store.create(_sample_profile(), template="classic")
     assert (await store.get(cv_id))["template"] == "classic"

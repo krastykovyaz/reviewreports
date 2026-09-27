@@ -54,7 +54,9 @@ def _score_str(score, lang: str) -> str:
     return f"{score}/10" if score is not None else t_chrome("report.na_value", lang)
 
 
-def render_latex(report: Report) -> str:
+def render_latex(report: Report, include_footer: bool = True) -> str:
+    # include_footer accepted for interface parity with the other renderers;
+    # this format never renders a footer of its own — see render_html.
     lang = report.meta.lang
     preamble = _PREAMBLE % {
         "kind_title": escape_latex(kind_title(report.meta.kind, lang)),

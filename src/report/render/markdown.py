@@ -6,7 +6,10 @@ def _score_str(score, lang: str) -> str:
     return f"{score}/10" if score is not None else t_chrome("report.na_value", lang)
 
 
-def render_markdown(report: Report) -> str:
+def render_markdown(report: Report, include_footer: bool = True) -> str:
+    # include_footer accepted for interface parity with the other renderers
+    # (called uniformly via RENDERERS[fmt](report, include_footer=...)) — this
+    # format never renders a footer of its own; see render_html.
     lang = report.meta.lang
     status_label = {Status.OK: t_chrome("status.ok", lang), Status.WARN: t_chrome("status.warn", lang), Status.BAD: t_chrome("status.bad", lang), Status.NA: t_chrome("status.na", lang)}
 

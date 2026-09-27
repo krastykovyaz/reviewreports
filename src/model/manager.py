@@ -275,6 +275,10 @@ class ModelManager:
                 supports_streaming=True,
                 supports_functions=True,
                 supports_vision=False,
+                # DeepSeek rejects response_format=json_schema (400 "This
+                # response_format type is unavailable now"); it only offers
+                # JSON mode, so structured outputs go through that path.
+                supports_json_schema=False,
                 output_version=None,
                 fallback_model=model.get("fallback_model"),
             )
@@ -866,6 +870,7 @@ class ModelManager:
                 temperature=config.temperature or self.default_temperature,
                 reasoning=config.reasoning if config.reasoning else None,
                 max_completion_tokens=config.max_completion_tokens or self.max_tokens,
+                supports_json_schema=config.supports_json_schema,
             )
             logger.info(f"| Created ChatOpenAI client for {config.model_name}")
             
