@@ -940,14 +940,14 @@ class ModelManager:
                 # Chat/response models use messages parameter
                 if messages is None:
                     raise ValueError("messages parameter is required for chat/response models")
-                result = await client(
-                    messages=messages,
-                    tools=tools,
-                    response_format=response_format,
-                    stream=stream,
-                    plugins=plugins,
-                    **kwargs,
-                )
+                # `plugins` is an OpenRouter-specific extension - forwarding it
+                # (even as None) to any other provider's client reaches their
+                # underlying SDK call, which doesn't accept that keyword at
+                # all and raises a TypeError, not just a no-op.
+                chat_kwargs: Dict[str, Any] = dict(messages=messages, tools=tools, response_format=response_format, stream=stream, **kwargs)
+                if isinstance(client, ChatOpenRouter):
+                    chat_kwargs["plugins"] = plugins
+                result = await client(**chat_kwargs)
             
             return result
             
@@ -987,14 +987,10 @@ class ModelManager:
                         # Chat/response models use messages parameter
                         if messages is None:
                             raise ValueError("messages parameter is required for chat/response models")
-                        result = await fallback_client(
-                            messages=messages,
-                            tools=tools,
-                            response_format=response_format,
-                            stream=stream,
-                            plugins=plugins,
-                            **kwargs,
-                        )
+                        fallback_chat_kwargs: Dict[str, Any] = dict(messages=messages, tools=tools, response_format=response_format, stream=stream, **kwargs)
+                        if isinstance(fallback_client, ChatOpenRouter):
+                            fallback_chat_kwargs["plugins"] = plugins
+                        result = await fallback_client(**fallback_chat_kwargs)
                     logger.info(f"| Fallback model {fallback_model} succeeded")
                     return result
                 except Exception as fallback_error:
