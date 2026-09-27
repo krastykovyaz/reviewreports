@@ -33,7 +33,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from src.cv.extract import extract_cv_profile
+from src.cv.extract import edit_cv_profile, extract_cv_profile
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
 from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.i18n import SUPPORTED_LANGUAGES, normalize_lang, t_chrome
@@ -223,6 +223,33 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
 
     cv_id = await _cv_store.create(profile, request.template)
     return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
+
+
+class EditCVRequest(BaseModel):
+    instructions: str
+    model_name: Optional[str] = None
+
+
+@app.post("/cv/{cv_id}/edit", response_model=CVResponse)
+async def edit_cv(cv_id: str, request: EditCVRequest):
+    """Revises a stored CV from a plain-language change request - the CV
+    equivalent of "describe changes" on a generated app or document. Keeps
+    the same id/template/share link; only the stored profile changes."""
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+    instructions = request.instructions.strip()
+    if not instructions:
+        raise HTTPException(status_code=422, detail="instructions is empty")
+
+    current = await _cv_store.get_profile(cv_id)
+    revised = await edit_cv_profile(current, instructions, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+    if revised is None:
+        raise HTTPException(status_code=422, detail="Could not apply that change")
+
+    await _cv_store.update_profile(cv_id, revised)
+    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump())
 
 
 @app.get("/cv/{cv_id}.{extension}")

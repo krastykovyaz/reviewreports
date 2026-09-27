@@ -58,3 +58,15 @@ class CVStore:
     async def get_profile(self, cv_id: str) -> Optional[CVProfile]:
         row = await self.get(cv_id)
         return CVProfile.model_validate(json.loads(row["profile_json"])) if row else None
+
+    async def update_profile(self, cv_id: str, profile: CVProfile) -> bool:
+        """Overwrites an existing CV's profile in place (its template and
+        created_at are untouched) — used by the "describe changes" edit flow,
+        which revises a profile without minting a new id/link."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE cv_profiles SET profile_json = ? WHERE id = ?",
+                (profile.model_dump_json(), cv_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0

@@ -35,3 +35,30 @@ async def extract_cv_profile(text: str, model_name: str) -> Optional[CVProfile]:
         logger.warning(f"| ⚠️ CV extraction returned no structured result: {getattr(response, 'message', None)}")
         return None
     return response.extra.parsed_model
+
+
+_EDIT_PERSONA = (
+    "You revise a structured CV/resume profile (given to you as JSON) according to a person's "
+    "plain-language change request - the same kind of \"describe changes\" instruction used to "
+    "iterate on a generated app or document. Return the FULL updated profile, not a diff: copy "
+    "every field the request doesn't touch unchanged, and apply only what was actually asked for. "
+    "Never invent employers, dates, or credentials that weren't already present or explicitly given "
+    "in the request. Preserve the profile's existing language rather than translating it, unless the "
+    "request asks for that."
+)
+
+
+async def edit_cv_profile(current: CVProfile, instructions: str, model_name: str) -> Optional[CVProfile]:
+    messages = [
+        SystemMessage(content=_EDIT_PERSONA),
+        HumanMessage(content=f"Current profile (JSON):\n{current.model_dump_json()}\n\nRequested change:\n{instructions}"),
+    ]
+    try:
+        response = await model_manager(model=model_name, messages=messages, response_format=CVProfile)
+    except Exception as exc:
+        logger.warning(f"| ⚠️ CV edit failed for model {model_name}: {exc}")
+        return None
+    if not response.success or not response.extra or not response.extra.parsed_model:
+        logger.warning(f"| ⚠️ CV edit returned no structured result: {getattr(response, 'message', None)}")
+        return None
+    return response.extra.parsed_model

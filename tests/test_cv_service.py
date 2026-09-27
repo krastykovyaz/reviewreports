@@ -345,3 +345,78 @@ def test_cv_from_text_json_rejects_blank_text_without_calling_the_model(client, 
 def test_cv_from_text_json_rejects_unknown_template(client):
     resp = client.post("/cv/from-text", json={"text": "some bio", "template": "brutalist"})
     assert resp.status_code == 400
+
+
+# ---- Describe-changes edit flow (POST /cv/{id}/edit) --------------------------
+
+
+def test_edit_cv_applies_change_and_keeps_id_and_template(client, monkeypatch):
+    cv_id = client.post("/cv", json={**_SAMPLE_PAYLOAD, "template": "classic"}).json()["id"]
+
+    async def fake_edit(current, instructions, model_name):
+        assert current.name == "Jordan Reyes"
+        assert instructions == "Add Kubernetes to skills"
+        assert model_name == "deepseek/deepseek-chat"
+        return current.model_copy(update={"skills": [*current.skills, "Kubernetes"]})
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "Add Kubernetes to skills"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == cv_id  # same id/link, not a new CV
+    assert body["template"] == "classic"  # untouched
+    assert body["profile"]["skills"] == ["Python", "Go", "Kubernetes"]
+
+    # persisted, not just returned
+    assert client.get(f"/cv/{cv_id}").json()["profile"]["skills"] == ["Python", "Go", "Kubernetes"]
+
+
+def test_edit_cv_forwards_model_name(client, monkeypatch):
+    cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
+
+    async def fake_edit(current, instructions, model_name):
+        assert model_name == "openai/gpt-4o"
+        return current
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "tighten the summary", "model_name": "openai/gpt-4o"})
+    assert resp.status_code == 200
+
+
+def test_edit_cv_unknown_id_is_404_without_calling_the_model(client, monkeypatch):
+    called = []
+
+    async def fake_edit(current, instructions, model_name):
+        called.append(instructions)
+        return current
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post("/cv/does-not-exist/edit", json={"instructions": "add a skill"})
+    assert resp.status_code == 404
+    assert called == []
+
+
+def test_edit_cv_rejects_blank_instructions_without_calling_the_model(client, monkeypatch):
+    cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
+    called = []
+
+    async def fake_edit(current, instructions, model_name):
+        called.append(instructions)
+        return current
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "   "})
+    assert resp.status_code == 422
+    assert called == []
+
+
+def test_edit_cv_failure_is_422_and_does_not_overwrite_stored_profile(client, monkeypatch):
+    cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
+
+    async def fake_edit(current, instructions, model_name):
+        return None
+
+    monkeypatch.setattr(app_module, "edit_cv_profile", fake_edit)
+    resp = client.post(f"/cv/{cv_id}/edit", json={"instructions": "add a skill"})
+    assert resp.status_code == 422
+    assert client.get(f"/cv/{cv_id}").json()["profile"]["skills"] == ["Python", "Go"]
