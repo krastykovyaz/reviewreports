@@ -31,12 +31,6 @@
     max-width: 1200px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem;
     -webkit-font-smoothing: antialiased;
   }
-  a.back {
-    display: inline-block; color: var(--text3); text-decoration: none;
-    font-size: 13px; margin-bottom: 1.25rem;
-  }
-  a.back:hover { color: var(--text); }
-  h1 { font-size: 20px; font-weight: 600; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
   .meta { color: var(--text3); font-size: 13px; margin-bottom: 1.5rem; }
   .meta a { color: var(--blue); text-decoration: none; }
   .meta a:hover { text-decoration: underline; }
@@ -68,9 +62,6 @@
 </style>
 </head>
 <body>
-  <a class="back" href="/audit/cv-builder?lang={{ lang }}">&larr; {{ t('ui.cv.build_another') }}</a>
-
-  <h1>{{ t('ui.cv.result_title') }}</h1>
   <p class="meta">{{ t('ui.cv.download_md_note') }} <a href="/audit/cv/{{ cv_id }}.md">{{ t('ui.download_md') }}</a></p>
 
   <div class="gallery">

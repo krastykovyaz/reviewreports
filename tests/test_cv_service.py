@@ -275,7 +275,17 @@ def test_cv_builder_result_page_localizes(client):
     resp = client.post("/cv-builder", data={**_FORM_PAYLOAD, "lang": "fr"}, follow_redirects=True)
     assert resp.status_code == 200
     assert '<html lang="fr">' in resp.text
-    assert "Comparer les modèles" in resp.text  # ui.cv.result_title
+    assert "La version Markdown est identique" in resp.text  # ui.cv.download_md_note
+
+
+def test_cv_builder_result_page_has_no_back_link_or_heading(client):
+    # This page is what a shared /cv-builder/{id} link opens to - it should
+    # read as "here is the CV", not as a builder-tool screen with its own
+    # navigation chrome back into the app.
+    resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=True)
+    assert "Build another CV" not in resp.text
+    assert "Compare templates" not in resp.text
+    assert "<h1>" not in resp.text
 
 
 def test_cv_builder_result_page_unknown_id_is_404(client):
