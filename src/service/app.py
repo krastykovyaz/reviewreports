@@ -12,6 +12,11 @@ Two ways in:
 
 The job model is kind-agnostic: every registered kind in src.review.generate
 plugs into both the API and the web flow the same way.
+
+A separate CV builder lives alongside the review kinds: POST /cv {profile,
+template} -> id; GET /cv/{id}.html|.pdf|.md for the rendered CV. No job
+queue there (unlike the review kinds' minutes-long scans, CV rendering is
+synchronous and fast - no LLM call, no browser scan).
 """
 
 import json
@@ -25,16 +30,21 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
+from src.cv.schema import CVProfile
 from src.i18n import SUPPORTED_LANGUAGES, normalize_lang, t_chrome
 from src.report.render import RENDERERS
 from src.report.schema import Report
 from src.review.generate import generate_report, supported_kinds
+from src.service.cv_store import CVStore
 from src.service.db import JobStatus, JobStore
 from src.utils import assemble_project_path
 
 _MEDIA_TYPES = {"markdown": "text/markdown", "html": "text/html", "latex": "text/x-tex", "pdf": "application/pdf"}
 _EXTENSION_TO_FORMAT = {"md": "markdown", "html": "html", "tex": "latex", "pdf": "pdf"}
 _BINARY_FORMATS = {"pdf"}
+
+_CV_EXTENSION_TO_FORMAT = {"html": "html", "pdf": "pdf", "md": "markdown"}
 
 _KIND_LABEL_KEYS = {
     "website_audit": "ui.kind.website_audit",
@@ -49,12 +59,14 @@ _FILE_KINDS = {"resume_review", "presentation_review", "book_review"}
 _UPLOAD_DIR = assemble_project_path("workdir/uploads")
 
 _store = JobStore(db_path="workdir/service/jobs.db")
+_cv_store = CVStore(db_path="workdir/service/cv.db")
 _templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _store.init()
+    await _cv_store.init()
     os.makedirs(_UPLOAD_DIR, exist_ok=True)
     yield
 
@@ -147,6 +159,70 @@ async def get_report(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return _job_response(job)
+
+
+# ---- CV builder ---------------------------------------------------------------
+
+
+class CreateCVRequest(CVProfile):
+    template: str = "modern"
+
+
+class CVResponse(BaseModel):
+    id: str
+    template: str
+    profile: dict
+
+
+@app.post("/cv", response_model=CVResponse)
+async def create_cv(request: CreateCVRequest):
+    if request.template not in CV_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template '{request.template}'. Must be one of {CV_TEMPLATES}.")
+
+    profile = CVProfile.model_validate(request.model_dump(exclude={"template"}))
+    cv_id = await _cv_store.create(profile, request.template)
+    return CVResponse(id=cv_id, template=request.template, profile=profile.model_dump())
+
+
+@app.get("/cv/{cv_id}.{extension}")
+async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = None):
+    # Registered before /cv/{cv_id}, same reason as /reports/{job_id}.{extension}
+    # above: Starlette's {cv_id} path converter matches dots too.
+    output_format = _CV_EXTENSION_TO_FORMAT.get(extension)
+    if output_format is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported extension '.{extension}'. Use .html, .pdf, or .md.")
+
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+    profile = await _cv_store.get_profile(cv_id)
+    chosen_template = template or row["template"]
+    if output_format != "markdown" and chosen_template not in CV_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template '{chosen_template}'. Must be one of {CV_TEMPLATES}.")
+
+    if output_format == "html":
+        rendered = render_cv_html(profile, chosen_template)
+    elif output_format == "pdf":
+        try:
+            rendered = render_cv_pdf(profile, chosen_template)
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
+    else:
+        rendered = render_cv_markdown(profile)
+
+    if output_format == "pdf":
+        return Response(content=rendered, media_type="application/pdf")
+    media_type = "text/html" if output_format == "html" else "text/markdown"
+    return PlainTextResponse(content=rendered, media_type=media_type)
+
+
+@app.get("/cv/{cv_id}", response_model=CVResponse)
+async def get_cv(cv_id: str):
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    return CVResponse(id=row["id"], template=row["template"], profile=json.loads(row["profile_json"]))
 
 
 # ---- B2C web flow --------------------------------------------------------------
