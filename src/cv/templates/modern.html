@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ profile.name }} — CV</title>
+<style>
+  :root { --accent: #2563eb; --ink: #1a1d23; --muted: #5b6270; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f2f3f5; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); padding: 24px; }
+  .page {
+    width: 440px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
+    overflow: hidden;
+  }
+  /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
+     scrollable — the layout below was validated to fit within this frame
+     for a full one-page sample profile; unusually long content (many jobs,
+     long bullets) can still clip, since fit depends on content length. */
+  .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
+
+  .modern { display: flex; height: 100%; }
+  .modern .side { width: 36%; background: #1e2330; color: #d7dbe6; padding: 22px 16px; }
+  .modern .side .name { color: #fff; font-size: 17px; font-weight: 700; line-height: 1.25; }
+  .modern .side .role { color: #8fb3ff; font-size: 11px; margin: 4px 0 18px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .modern .side h4 { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #7b8296; margin: 16px 0 6px; }
+  .modern .side p, .modern .side li { font-size: 11px; line-height: 1.5; margin: 0 0 3px; color: #c3c8d6; }
+  .modern .side ul { padding-left: 14px; margin: 0; }
+  .modern .main { flex: 1; padding: 18px 18px; }
+  .modern .main h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 4px; margin: 0 0 10px; }
+  .modern .main section + section { margin-top: 13px; }
+  .modern .summary { font-size: 11.5px; line-height: 1.5; color: #333; }
+  .modern .job { margin-bottom: 9px; }
+  .modern .job-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; }
+  .modern .job-sub { font-size: 11px; color: var(--muted); margin: 1px 0 4px; font-style: italic; }
+  .modern .job ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.5; color: #333; }
+</style>
+</head>
+<body>
+<div class="page">
+<div class="doc">
+  <div class="modern">
+    <div class="side">
+      <div class="name">{{ profile.name }}</div>
+      {% if profile.role %}<div class="role">{{ profile.role }}</div>{% endif %}
+
+      <h4>Contact</h4>
+      <p>{{ profile.contact.email }}</p>
+      {% if profile.contact.phone %}<p>{{ profile.contact.phone }}</p>{% endif %}
+      {% if profile.contact.location %}<p>{{ profile.contact.location }}</p>{% endif %}
+      {% for link in profile.contact.links %}<p>{{ link }}</p>{% endfor %}
+
+      {% if profile.skills %}
+      <h4>Skills</h4>
+      <ul>
+        {% for skill in profile.skills %}<li>{{ skill }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if profile.education %}
+      <h4>Education</h4>
+      {% for edu in profile.education %}
+      <p><strong>{{ edu.degree }}</strong><br>{{ edu.institution }}{% if edu.year %}, {{ edu.year }}{% endif %}</p>
+      {% endfor %}
+      {% endif %}
+
+      {% if profile.languages %}
+      <h4>Languages</h4>
+      <p>{{ profile.languages|join(", ") }}</p>
+      {% endif %}
+    </div>
+    <div class="main">
+      {% if profile.summary %}
+      <section>
+        <h4>Summary</h4>
+        <div class="summary">{{ profile.summary }}</div>
+      </section>
+      {% endif %}
+      {% if profile.experience %}
+      <section>
+        <h4>Experience</h4>
+        {% for job in profile.experience %}
+        <div class="job">
+          <div class="job-head"><span>{{ job.title }}</span><span>{{ job.start }} – {{ job.end }}</span></div>
+          <div class="job-sub">{{ job.organization }}{% if job.location %}, {{ job.location }}{% endif %}</div>
+          {% if job.bullets %}
+          <ul>
+            {% for bullet in job.bullets %}<li>{{ bullet }}</li>{% endfor %}
+          </ul>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </section>
+      {% endif %}
+    </div>
+  </div>
+</div>
+</div>
+</body>
+</html>

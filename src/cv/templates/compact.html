@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ profile.name }} — CV</title>
+<style>
+  :root { --accent: #2563eb; --ink: #1a1d23; --muted: #5b6270; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f2f3f5; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); padding: 24px; }
+  .page {
+    width: 440px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
+    overflow: hidden;
+  }
+  /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
+     scrollable — validated to fit a full one-page sample profile with room
+     to spare; unusually long content can still clip. */
+  .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
+
+  .compact { padding: 18px 22px; font-family: "SF Mono", "Courier New", monospace; font-size: 10.5px; }
+  .compact .head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid var(--ink); padding-bottom: 8px; margin-bottom: 10px; }
+  .compact .head .name { font-size: 15px; font-weight: 700; font-family: -apple-system, sans-serif; }
+  .compact .head .contact { font-size: 9.5px; color: var(--muted); text-align: right; line-height: 1.5; }
+  .compact h4 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); margin: 12px 0 5px; font-family: -apple-system, sans-serif; font-weight: 700; }
+  .compact .summary { line-height: 1.5; margin-bottom: 4px; }
+  .compact .row { display: flex; gap: 10px; }
+  .compact .col { flex: 1; }
+  .compact .job { margin-bottom: 7px; }
+  .compact .job-head { display: flex; justify-content: space-between; font-weight: 700; font-family: -apple-system, sans-serif; font-size: 11px; }
+  .compact .job-sub { color: var(--muted); font-size: 9.5px; margin-bottom: 2px; }
+  .compact ul { margin: 0; padding-left: 14px; line-height: 1.45; }
+  .compact .skills-line { line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page">
+<div class="doc">
+  <div class="compact">
+    <div class="head">
+      <div class="name">{{ profile.name }}</div>
+      <div class="contact">
+        {{ profile.contact.email }}<br>
+        {%- if profile.contact.phone %}{{ profile.contact.phone }}{% endif -%}
+        {%- if profile.contact.phone and profile.contact.location %} · {% endif -%}
+        {%- if profile.contact.location %}{{ profile.contact.location }}{% endif -%}
+        {% for link in profile.contact.links %}<br>{{ link }}{% endfor %}
+      </div>
+    </div>
+
+    {% if profile.summary %}<div class="summary">{{ profile.summary }}</div>{% endif %}
+
+    {% if profile.experience %}
+    <h4>Experience</h4>
+    {% for job in profile.experience %}
+    <div class="job">
+      <div class="job-head"><span>{{ job.title }} — {{ job.organization }}</span><span>{{ job.start }}–{{ job.end }}</span></div>
+      {% if job.location %}<div class="job-sub">{{ job.location }}</div>{% endif %}
+      {% if job.bullets %}
+      <ul>
+        {% for bullet in job.bullets %}<li>{{ bullet }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    <div class="row">
+      {% if profile.education %}
+      <div class="col">
+        <h4>Education</h4>
+        {% for edu in profile.education %}
+        <div class="summary">{{ edu.degree }}, {{ edu.institution }}{% if edu.year %}, {{ edu.year }}{% endif %}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if profile.skills %}
+      <div class="col">
+        <h4>Skills</h4>
+        <div class="skills-line">{{ profile.skills|join(" · ") }}</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+</div>
+</body>
+</html>

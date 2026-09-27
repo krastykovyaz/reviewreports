@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ profile.name }} — CV</title>
+<style>
+  :root { --ink: #1a1d23; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f2f3f5; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); padding: 24px; }
+  .page {
+    width: 440px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
+    overflow: hidden;
+  }
+  /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
+     scrollable — validated to fit a full one-page sample profile; unusually
+     long content can still clip, since fit depends on content length. */
+  .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
+
+  .classic { padding: 20px 28px; font-family: Georgia, "Times New Roman", serif; }
+  .classic .head { text-align: center; border-bottom: 2px solid #222; padding-bottom: 8px; margin-bottom: 10px; }
+  .classic .head .name { font-size: 18px; font-weight: 700; letter-spacing: .02em; }
+  .classic .head .contact { font-size: 10.5px; color: #444; margin-top: 5px; font-family: Arial, sans-serif; }
+  .classic h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid #999; padding-bottom: 3px; margin: 10px 0 6px; font-family: Arial, sans-serif; font-weight: 700; }
+  .classic .summary { font-size: 11.5px; line-height: 1.5; }
+  .classic .job-head { display: flex; justify-content: space-between; font-weight: 700; font-size: 12px; }
+  .classic .job-sub { font-size: 11px; font-style: italic; color: #333; margin: 1px 0 4px; }
+  .classic .job ul { margin: 0 0 6px; padding-left: 18px; font-size: 11px; line-height: 1.45; font-family: Arial, sans-serif; }
+  .classic .skills { font-size: 11px; font-family: Arial, sans-serif; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page">
+<div class="doc">
+  <div class="classic">
+    <div class="head">
+      <div class="name">{{ profile.name }}</div>
+      <div class="contact">
+        {{ profile.contact.email }}
+        {%- if profile.contact.phone %} &nbsp;·&nbsp; {{ profile.contact.phone }}{% endif -%}
+        {%- if profile.contact.location %} &nbsp;·&nbsp; {{ profile.contact.location }}{% endif -%}
+        {%- for link in profile.contact.links %} &nbsp;·&nbsp; {{ link }}{% endfor -%}
+      </div>
+    </div>
+
+    {% if profile.summary %}
+    <h4>Summary</h4>
+    <div class="summary">{{ profile.summary }}</div>
+    {% endif %}
+
+    {% if profile.experience %}
+    <h4>Experience</h4>
+    {% for job in profile.experience %}
+    <div class="job">
+      <div class="job-head"><span>{{ job.title }}, {{ job.organization }}</span><span>{{ job.start }} – {{ job.end }}</span></div>
+      {% if job.location %}<div class="job-sub">{{ job.location }}</div>{% endif %}
+      {% if job.bullets %}
+      <ul>
+        {% for bullet in job.bullets %}<li>{{ bullet }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if profile.education %}
+    <h4>Education</h4>
+    {% for edu in profile.education %}
+    <div class="summary">{{ edu.degree }} — {{ edu.institution }}{% if edu.year %}, {{ edu.year }}{% endif %}</div>
+    {% endfor %}
+    {% endif %}
+
+    {% if profile.skills %}
+    <h4>Skills</h4>
+    <div class="skills">{{ profile.skills|join(", ") }}</div>
+    {% endif %}
+  </div>
+</div>
+</div>
+</body>
+</html>
