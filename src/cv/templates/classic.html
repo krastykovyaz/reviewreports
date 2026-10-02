@@ -43,6 +43,7 @@
   @media print { .classic { width: 8.5in; padding: 37.1px 51.9px; } }
   .classic .head { text-align: center; border-bottom: 2px solid #222; padding-bottom: 8px; margin-bottom: 10px; }
   .classic .head .name { font-size: 18px; font-weight: 700; letter-spacing: .02em; }
+  .classic .head .role { font-size: 11.5px; font-style: italic; color: #333; margin-top: 2px; }
   .classic .head .contact { font-size: 10.5px; color: #444; margin-top: 5px; font-family: Arial, sans-serif; }
   .classic h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid #999; padding-bottom: 3px; margin: 10px 0 6px; font-family: Arial, sans-serif; font-weight: 700; }
   .classic .summary { font-size: 11.5px; line-height: 1.5; }
@@ -54,6 +55,7 @@
   @media print {
     .classic .head { border-bottom-width: 3.7px; padding-bottom: 14.8px; margin-bottom: 18.5px; }
     .classic .head .name { font-size: 33.4px; }
+    .classic .head .role { font-size: 21.3px; margin-top: 3.7px; }
     .classic .head .contact { font-size: 19.5px; margin-top: 9.3px; }
     .classic h4 { font-size: 22.3px; border-bottom-width: 1.9px; padding-bottom: 5.6px; margin: 18.5px 0 11.1px; }
     .classic .summary { font-size: 21.3px; }
@@ -70,6 +72,7 @@
   <div class="classic">
     <div class="head">
       <div class="name">{{ profile.name }}</div>
+      {% if profile.role %}<div class="role">{{ profile.role }}</div>{% endif %}
       <div class="contact">
         {{ profile.contact.email }}
         {%- if profile.contact.phone %} &nbsp;·&nbsp; {{ profile.contact.phone }}{% endif -%}
@@ -108,6 +111,10 @@
     {% if profile.skills %}
     <h4>Skills</h4>
     <div class="skills">{{ profile.skills|join(", ") }}</div>
+    {% endif %}
+
+    {% if profile.languages %}
+    <div class="skills"><strong>Languages:</strong> {{ profile.languages|join(", ") }}</div>
     {% endif %}
   </div>
 </div>

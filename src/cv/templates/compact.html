@@ -44,6 +44,7 @@
   @media print { .compact { width: 8.5in; padding: 33.4px 40.8px; font-size: 19.5px; } }
   .compact .head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid var(--ink); padding-bottom: 8px; margin-bottom: 10px; }
   .compact .head .name { font-size: 15px; font-weight: 700; font-family: -apple-system, sans-serif; }
+  .compact .head .role { font-size: 9.5px; color: var(--muted); margin-top: 2px; font-family: -apple-system, sans-serif; }
   .compact .head .contact { font-size: 9.5px; color: var(--muted); text-align: right; line-height: 1.5; }
   .compact h4 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); margin: 12px 0 5px; font-family: -apple-system, sans-serif; font-weight: 700; }
   .compact .summary { line-height: 1.5; margin-bottom: 4px; }
@@ -58,6 +59,7 @@
   @media print {
     .compact .head { border-bottom-width: 2.8px; padding-bottom: 14.8px; margin-bottom: 18.5px; }
     .compact .head .name { font-size: 27.8px; }
+    .compact .head .role { font-size: 17.6px; margin-top: 3.7px; }
     .compact .head .contact { font-size: 17.6px; }
     .compact h4 { font-size: 17.6px; margin: 22.3px 0 9.3px; }
     .compact .summary { margin-bottom: 7.4px; }
@@ -74,7 +76,10 @@
 <div class="doc">
   <div class="compact">
     <div class="head">
-      <div class="name">{{ profile.name }}</div>
+      <div>
+        <div class="name">{{ profile.name }}</div>
+        {% if profile.role %}<div class="role">{{ profile.role }}</div>{% endif %}
+      </div>
       <div class="contact">
         {{ profile.contact.email }}<br>
         {%- if profile.contact.phone %}{{ profile.contact.phone }}{% endif -%}
@@ -110,10 +115,16 @@
         {% endfor %}
       </div>
       {% endif %}
-      {% if profile.skills %}
+      {% if profile.skills or profile.languages %}
       <div class="col">
+        {% if profile.skills %}
         <h4>Skills</h4>
         <div class="skills-line">{{ profile.skills|join(" · ") }}</div>
+        {% endif %}
+        {% if profile.languages %}
+        <h4>Languages</h4>
+        <div class="skills-line">{{ profile.languages|join(" · ") }}</div>
+        {% endif %}
       </div>
       {% endif %}
     </div>
