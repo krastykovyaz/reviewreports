@@ -10,7 +10,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
-from src.audit.browser_session import audit_page
+from src.audit.browser_session import assert_page_is_public, audit_page
 from src.audit.collectors.accessibility import collect_accessibility
 from src.audit.collectors.content import collect_content
 from src.audit.collectors.links import collect_broken_links
@@ -118,6 +118,7 @@ async def run_website_audit(url: str, model_name: Optional[str] = None, lang: st
 
     async with audit_page(homepage.url) as page:
         facts: Dict[str, Any] = await gather_page_facts(page)
+        await assert_page_is_public(page)  # before anything read off the page is used
         ux = await collect_ux(page, model_name=model_name, lang=lang)
 
     pillars: List[Pillar] = [

@@ -28,11 +28,18 @@ LANGUAGE_NAMES = {"en": "English", "ru": "Russian", "fr": "French"}
 def walk_files(root: str) -> List[str]:
     # Excludes only explicitly-known junk/vendor dirs, not every dot-dir — .github (CI
     # config) and similar dot-dirs with real signal must stay walkable.
+    #
+    # Symlinks are skipped: a cloned repo is attacker-controlled, and `leak.py ->
+    # /path/on/server` would otherwise have open() read a file from outside the repo
+    # into the model input. (os.walk already doesn't recurse into symlinked dirs.)
     files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
         for name in filenames:
-            files.append(os.path.join(dirpath, name))
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                continue
+            files.append(path)
     return files
 
 

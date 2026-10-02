@@ -62,12 +62,18 @@ def test_output_formats_tuple_has_three_entries():
     assert OUTPUT_FORMATS == ("html", "pdf", "markdown")
 
 
+def _require_weasyprint():
+    try:
+        from weasyprint import HTML  # noqa: F401
+    except (ImportError, OSError) as exc:  # OSError: WeasyPrint without system Pango/GObject
+        pytest.skip(f"WeasyPrint unavailable: {exc}")
+
+
 @pytest.mark.parametrize("template", TEMPLATES)
 def test_render_cv_pdf_produces_valid_pdf_bytes(template):
-    # Real page-count/one-page-fit verification needs a PDF parser, which
-    # isn't a project dependency - that was done by hand (rendered +
-    # rasterized each template's PDF output and inspected it) rather than
-    # here. This just guards the basic contract: valid, non-trivial PDF bytes.
+    _require_weasyprint()
+    # Basic contract: valid, non-trivial PDF bytes. The one-page fit is
+    # asserted separately in test_full_profile_fits_one_pdf_page.
     pdf_bytes = render_cv_pdf(_sample_profile(), template)
     assert pdf_bytes.startswith(b"%PDF")
     assert len(pdf_bytes) > 1000
@@ -94,3 +100,37 @@ def test_render_cv_markdown_omits_empty_sections():
     assert "## Education" not in md
     assert "## Skills" not in md
     assert "## Languages" not in md
+
+
+# ---- 2026-10-02 validation review regressions ------------------------------------
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_every_template_renders_role_and_languages(template):
+    # Classic and Compact silently dropped both; only Modern rendered them, and
+    # the section test above never asserted on either field.
+    profile = _sample_profile()
+    profile.role = "ROLE_MARKER"
+    profile.languages = ["LANG_MARKER_EN", "LANG_MARKER_ES"]
+    html = render_cv_html(profile, template)
+    assert "ROLE_MARKER" in html
+    assert "LANG_MARKER_EN" in html and "LANG_MARKER_ES" in html
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_languages_without_skills_still_render(template):
+    profile = CVProfile(name="Alex Kim", contact=Contact(email="a@b.c"), languages=["LANG_MARKER"])
+    assert "LANG_MARKER" in render_cv_html(profile, template)
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_full_profile_fits_one_pdf_page(template):
+    # WeasyPrint's own page count: the one-page claim the templates are tuned
+    # for, checked for real instead of by eye. A regression that adds a field
+    # without room for it spills onto a second page and fails here.
+    _require_weasyprint()
+    from weasyprint import HTML
+
+    profile = _sample_profile()
+    profile.role = "Senior Backend Engineer"
+    assert len(HTML(string=render_cv_html(profile, template)).render().pages) == 1

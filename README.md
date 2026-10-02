@@ -3,7 +3,7 @@
 An agent framework and service for generating structured **review reports**:
 website audits, code reviews, app reviews, and document reviews (resumes,
 presentations, books/manuscripts) — one shared schema, one scoring model,
-three output formats (Markdown/HTML/PDF/LaTeX), and full en/ru/fr localization.
+four output formats (Markdown/HTML/PDF/LaTeX), and full en/ru/fr localization.
 
 The repo began as an ESG (Environmental, Social, Governance) analysis agent.
 That agent, its retrieval tools, and the ESG benchmark dataset still exist
@@ -38,6 +38,40 @@ Two ways in:
 - **Agent tools**: `website_audit`, `code_review`, `app_review`,
   `document_review` are registered tools usable by the agent loop
   (`configs/reviewreports.py`).
+
+## CV builder
+
+A generation feature alongside the review kinds: fill in a form (or paste free
+text and let a model extract it), compare three one-page templates (Modern,
+Classic, Compact), and download HTML, PDF or Markdown.
+
+- Web: `GET /cv-builder` · API: `POST /cv`, `GET /cv/{id}.html|.pdf|.md`
+- The "paste your info" mode sends the pasted text to the model you name (default
+  `deepseek/deepseek-chat`), so it needs a working key for that provider.
+- A CV too long for one page spills onto extra PDF pages rather than being clipped.
+
+## Deploying the service
+
+The service has **no authentication**. Treat it as something to put behind a
+reverse proxy with its own access control and rate limiting, and know what it
+accepts from an anonymous caller:
+
+| Kind | Accepted from the network |
+|---|---|
+| `website_audit` | any `http(s)` URL; loopback, private, link-local and reserved addresses are refused, on every redirect hop and for the headless browser's final page |
+| `code_review` | a public `http(s)` git URL only |
+| `app_review`, document kinds | no local paths, unless the operator allows directories (below); documents arrive as uploads |
+
+Environment variables:
+
+- `REVIEW_ALLOWED_ROOTS` — `os.pathsep`-separated directories that `app_review` and the
+  document kinds may read from the API. Unset (the default) means no local paths at all.
+  Paths are resolved (symlinks, `..`) before the comparison.
+- `MAX_UPLOAD_BYTES` — upload size cap, default 10 MB (HTTP 413 above it).
+
+Not covered: there is no rate limit, no model allow-list (a caller can name any
+registered model), and no retention policy for uploads or stored CVs. Pasted CV text
+and uploaded resumes go to a third-party model provider when a model is used.
 
 ## Project structure
 
