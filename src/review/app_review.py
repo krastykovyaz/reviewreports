@@ -35,17 +35,93 @@ _APP_REVIEW_PERSONA = (
 
 _WEIGHT_KEYS = {"check.entry_point": 2, "check.hardcoded_secrets": 3, "check.debug_mode": 2, "check.cors_wildcard": 1.5, "check.env_file": 1.5}
 
-_SECRET_PATTERNS = [
-    re.compile(r"sk-ant-[A-Za-z0-9-]{20,}"),
-    re.compile(r"sk-[A-Za-z0-9]{20,}"),
-    re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}"),
-    re.compile(r"ghp_[A-Za-z0-9]{30,}"),
-    re.compile(r"hf_[A-Za-z0-9]{20,}"),
-    re.compile(r"AKIA[A-Z0-9]{12,}"),
-    re.compile(r"(?:API_KEY|SECRET|PASSWORD|TOKEN)\s*[:=]\s*['\"][A-Za-z0-9/+_-]{12,}['\"]", re.IGNORECASE),
+# Vendor-shaped tokens: matched on the value alone, wherever it appears.
+_VENDOR_TOKEN_PATTERNS = [
+    re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"sk-(?:proj-|or-v1-|svcacct-)?[A-Za-z0-9_-]{20,}"),
+    re.compile(r"AIzaSy[A-Za-z0-9_-]{30,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{30,}"),
+    re.compile(r"hf_[A-Za-z0-9]{30,}"),
+    re.compile(r"AKIA[A-Z0-9]{16}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    # scheme://user:password@host - a credential embedded in a connection string
+    re.compile(r"[a-z][a-z0-9+.-]*://[^\s:/@'\"]+:([^\s/@'\"]{3,})@"),
 ]
-_PLACEHOLDER_RE = re.compile(r"xxx|your[-_]|changeme|<[^>]+>|example|placeholder|\$\{", re.IGNORECASE)
-_TEXT_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".json", ".yml", ".yaml", ".env", ".txt", ".md", ".cfg", ".ini"}
+
+# NAME = "value" / NAME: "value" / "NAME": "value" / config["NAME"] = "value",
+# where NAME merely *contains* a secret-ish word (SECRET_KEY, DB_PASSWORD, ...).
+_SECRET_NAME = r"[A-Za-z0-9_]*(?:API_?KEY|SECRET|PASSWORD|PASSWD|TOKEN|PRIVATE_?KEY|ACCESS_?KEY|AUTH_?KEY)[A-Za-z0-9_]*"
+_NAMED_ASSIGNMENT = re.compile(rf"""{_SECRET_NAME}['"]?\]?\s*(?:=|:|=>)\s*['"]([^'"\s]{{8,}})['"]""", re.IGNORECASE)
+# .env-style files hold unquoted values: API_KEY=abc123...
+_ENV_ASSIGNMENT = re.compile(rf"^\s*(?:export\s+)?{_SECRET_NAME}\s*=\s*['\"]?([^'\"\s#]{{8,}})", re.IGNORECASE | re.MULTILINE)
+
+# A value is a placeholder only if the WHOLE value looks like one. The old check
+# was a substring match, so a real key that happened to contain "xxx" or
+# "example" was skipped and the pillar scored 10/10.
+_PLACEHOLDER_VALUE = re.compile(
+    r"""(?ix)
+    [<{$%].*              # <your-key>, ${VAR}, {{ var }}, %(var)s
+    | \*+ | \.+ | -+ | _+
+    | none | null | true | false | todo | redacted | changeme | change-me | placeholder
+    | (?:your|my|the)?[-_\sa-z]*(?:key|token|secret|password)[-_\sa-z]*here
+    | (?:your|example|dummy|replace|insert|sample|fake)[-_a-z0-9]*
+    """
+)
+_SYMBOLS = set("!@#$%^&*+/=~")
+
+
+_DEBUG_ON = re.compile(r"""\bdebug['"]?\]?\s*[=:]\s*True\b""", re.IGNORECASE)
+# FastAPI/Starlette allow_origins=["*"], Flask-CORS origins="*" / bare CORS(app)
+# (which allows every origin by default), and a hand-set header.
+_CORS_OPEN = re.compile(
+    r"""allow_origins?\s*=\s*\[?\s*['"]\*['"]"""
+    r"""|\borigins\s*=\s*\[?\s*['"]\*['"]"""
+    r"""|\bCORS\(\s*app\s*\)"""
+    r"""|Access-Control-Allow-Origin['"]?\s*[:,=]\s*['"]\*['"]""",
+    re.IGNORECASE,
+)
+
+
+def _strip_comments(text: str) -> str:
+    """Drop whole-line and trailing # comments so `# never run with debug=True`
+    is not reported as the app running with debug on."""
+    return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
+
+
+def _is_placeholder(value: str) -> bool:
+    # Very low variety ("xxxxxxxx", "00000000", "abababab") is never a real secret.
+    return len(set(value)) <= 4 or bool(_PLACEHOLDER_VALUE.fullmatch(value))
+
+
+def _looks_like_secret_value(value: str) -> bool:
+    """For *named* assignments only (vendor-shaped tokens are accepted on shape).
+    Requires some entropy so `API_KEY_HEADER = "X-Api-Key"` is not flagged."""
+    return not _is_placeholder(value) and (any(c.isdigit() for c in value) or any(c in _SYMBOLS for c in value) or len(value) >= 16)
+
+
+def _is_env_file(name: str) -> bool:
+    return (name == ".env" or name.startswith(".env.")) and not name.endswith((".example", ".sample", ".template", ".dist"))
+
+
+def _find_secrets(path: str, text: str) -> bool:
+    for pattern in _VENDOR_TOKEN_PATTERNS:
+        for match in pattern.finditer(text):
+            value = match.group(1) if match.groups() else match.group(0)
+            if not _is_placeholder(value):
+                return True
+    named = [_NAMED_ASSIGNMENT]
+    if _is_env_file(os.path.basename(path)):
+        named.append(_ENV_ASSIGNMENT)
+    for pattern in named:
+        for match in pattern.finditer(text):
+            if _looks_like_secret_value(match.group(1)):
+                return True
+    return False
+
+
+_TEXT_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".json", ".yml", ".yaml", ".toml", ".txt", ".md", ".cfg", ".ini", ".conf", ".sh"}
 _MAX_SCAN_BYTES = 200_000
 
 _M = {
@@ -65,7 +141,7 @@ _M = {
 
     "entry.ok": {"en": "Found: {file}", "ru": "Найдена: {file}", "fr": "Trouvé : {file}"},
     "entry.missing_static": {"en": "No index.html found — a static site needs one at its root", "ru": "Не найден index.html — для статического сайта он обязателен в корне", "fr": "Aucun index.html trouvé — un site statique doit en avoir un à la racine"},
-    "entry.missing_server": {"en": "No obvious entry file (app.py/main.py/server.py) found for a {stack} app", "ru": "Не найден очевидный файл запуска (app.py/main.py/server.py) для приложения на {stack}", "fr": "Aucun fichier d'entrée évident (app.py/main.py/server.py) trouvé pour une application {stack}"},
+    "entry.missing_server": {"en": "No obvious entry file (app.py/main.py/server.py) found — detected: {stack}", "ru": "Не найден очевидный файл запуска (app.py/main.py/server.py) — определено: {stack}", "fr": "Aucun fichier d'entrée évident (app.py/main.py/server.py) trouvé — détecté : {stack}"},
     "entry.unknown_stack": {"en": "Stack unknown — cannot check for an entry point", "ru": "Стек не определён — невозможно проверить точку входа", "fr": "Stack inconnue — impossible de vérifier le point d'entrée"},
 
     "files.detail": {"en": "{n} file(s) in the project", "ru": "{n} файл(ов) в проекте", "fr": "{n} fichier(s) dans le projet"},
@@ -175,7 +251,7 @@ def _scan_text_files(root: str, files: List[str]) -> Dict[str, str]:
     """path -> content, for text files under the byte cap, skipping obvious binaries."""
     contents = {}
     for f in files:
-        if os.path.splitext(f)[1].lower() not in _TEXT_EXTENSIONS:
+        if os.path.splitext(f)[1].lower() not in _TEXT_EXTENSIONS and not _is_env_file(os.path.basename(f)):
             continue
         try:
             if os.path.getsize(f) > _MAX_SCAN_BYTES:
@@ -193,16 +269,7 @@ def collect_security_hygiene(root: str, lang: str = "en") -> Pillar:
     contents = _scan_text_files(root, files)
     findings: List[Finding] = []
 
-    secret_files = []
-    for path, text in contents.items():
-        for pattern in _SECRET_PATTERNS:
-            for match in pattern.finditer(text):
-                if not _PLACEHOLDER_RE.search(match.group(0)):
-                    secret_files.append(path)
-                    break
-            else:
-                continue
-            break
+    secret_files = [path for path, text in contents.items() if _find_secrets(path, text)]
     secret_files = sorted(set(secret_files))
     if secret_files:
         findings.append(Finding(check=_t("check.hardcoded_secrets", lang), status=Status.BAD, detail=_t("secrets.found", lang, n=len(secret_files), files=", ".join(secret_files[:5])), evidence=", ".join(secret_files), fix=_t("secrets.fix", lang)))
@@ -211,7 +278,7 @@ def collect_security_hygiene(root: str, lang: str = "en") -> Pillar:
 
     debug_file = None
     for path, text in contents.items():
-        if path.lower().endswith(".py") and re.search(r"debug\s*=\s*True", text):
+        if path.lower().endswith(".py") and _DEBUG_ON.search(_strip_comments(text)):
             debug_file = path
             break
     if debug_file:
@@ -221,7 +288,7 @@ def collect_security_hygiene(root: str, lang: str = "en") -> Pillar:
 
     cors_file = None
     for path, text in contents.items():
-        if path.lower().endswith(".py") and re.search(r"allow_origins\s*=\s*\[\s*['\"]\*['\"]\s*\]", text):
+        if path.lower().endswith(".py") and _CORS_OPEN.search(_strip_comments(text)):
             cors_file = path
             break
     if cors_file:
@@ -229,7 +296,7 @@ def collect_security_hygiene(root: str, lang: str = "en") -> Pillar:
     else:
         findings.append(Finding(check=_t("check.cors_wildcard", lang), status=Status.OK, detail=_t("cors.ok", lang)))
 
-    has_env = any(os.path.basename(f) == ".env" for f in files)
+    has_env = any(_is_env_file(os.path.basename(f)) for f in files)
     if has_env:
         findings.append(Finding(check=_t("check.env_file", lang), status=Status.WARN, detail=_t("env.present", lang), fix=_t("env.fix", lang)))
     else:
