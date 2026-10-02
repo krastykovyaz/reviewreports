@@ -2,6 +2,11 @@ from src.i18n import kind_title, t_chrome
 from src.report.schema import Report, Status
 
 
+def _cell(text: str) -> str:
+    """Make free text safe inside a Markdown table cell (LLM summaries can contain | and newlines)."""
+    return str(text).replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def _score_str(score, lang: str) -> str:
     return f"{score}/10" if score is not None else t_chrome("report.na_value", lang)
 
@@ -31,7 +36,7 @@ def render_markdown(report: Report) -> str:
     if report.pillars:
         lines += [f"## {t_chrome('report.scorecard', lang)}", "", f"| {t_chrome('report.col_pillar', lang)} | {t_chrome('report.col_score', lang)} | {t_chrome('report.col_summary', lang)} |", "|---|---|---|"]
         for pillar in report.pillars:
-            lines.append(f"| {pillar.name} | {_score_str(pillar.score, lang)} | {pillar.summary} |")
+            lines.append(f"| {_cell(pillar.name)} | {_score_str(pillar.score, lang)} | {_cell(pillar.summary)} |")
         lines.append("")
 
         for pillar in report.pillars:

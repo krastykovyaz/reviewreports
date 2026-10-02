@@ -74,6 +74,18 @@ class JobStore:
     async def mark_failed(self, job_id: str, error: str) -> None:
         await self._update(job_id, status=JobStatus.FAILED.value, error=error)
 
+    async def fail_unfinished(self, reason: str) -> int:
+        """Mark every pending/running job failed; returns how many. For startup
+        only: those jobs' background tasks died with the previous process."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE status IN (?, ?)",
+                (JobStatus.FAILED.value, reason, now, JobStatus.PENDING.value, JobStatus.RUNNING.value),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def _update(self, job_id: str, **fields: Any) -> None:
         fields["updated_at"] = datetime.now(timezone.utc).isoformat()
         set_clause = ", ".join(f"{k} = ?" for k in fields)

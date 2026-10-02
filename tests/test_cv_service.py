@@ -4,6 +4,11 @@ from fastapi.testclient import TestClient
 import src.service.app as app_module
 from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.service.cv_store import CVStore
+from src.service.db import JobStore
+
+
+async def _noop_async(*args, **kwargs):
+    return None
 
 _SAMPLE_PAYLOAD = {
     "name": "Jordan Reyes",
@@ -20,6 +25,9 @@ _SAMPLE_PAYLOAD = {
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "_cv_store", CVStore(db_path=str(tmp_path / "cv.db")))
+    monkeypatch.setattr(app_module, "_store", JobStore(db_path=str(tmp_path / "jobs.db")))
+    monkeypatch.setattr(app_module, "_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr(app_module.model_manager, "initialize", _noop_async)
     with TestClient(app_module.app) as c:
         yield c
 
@@ -98,11 +106,12 @@ def test_get_rendered_pdf(client, monkeypatch):
     assert resp.content == b"%PDF-1.7 fake cv pdf"
 
 
-def test_get_rendered_pdf_unavailable_is_503(client, monkeypatch):
-    def raise_import_error(profile, template):
-        raise ImportError("cannot load library 'libgobject-2.0-0'")
+@pytest.mark.parametrize("exc_type", [ImportError, OSError])
+def test_get_rendered_pdf_unavailable_is_503(client, monkeypatch, exc_type):
+    def raise_unavailable(profile, template):
+        raise exc_type("cannot load library 'libgobject-2.0-0'")
 
-    monkeypatch.setattr(app_module, "render_cv_pdf", raise_import_error)
+    monkeypatch.setattr(app_module, "render_cv_pdf", raise_unavailable)
     cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
     resp = client.get(f"/cv/{cv_id}.pdf")
     assert resp.status_code == 503
