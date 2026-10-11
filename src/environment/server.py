@@ -12,6 +12,7 @@ from src.config import config
 from src.environment.context import EnvironmentContextManager
 from src.environment.types import Environment, EnvironmentConfig
 from src.utils import assemble_project_path
+from src.model_defaults import DEFAULT_MODEL
 
 class ECPServer(BaseModel):
     """ECP Server for managing environment registration and execution with lazy loading."""
@@ -47,7 +48,7 @@ class ECPServer(BaseModel):
             base_dir=self.base_dir,
             save_path=self.save_path,
             contract_path=self.contract_path,
-            model_name="openrouter/gemini-3-flash-preview",
+            model_name=DEFAULT_MODEL,
             embedding_model_name="openrouter/text-embedding-3-large"
         )
         await self.environment_context_manager.initialize(env_names=env_names)

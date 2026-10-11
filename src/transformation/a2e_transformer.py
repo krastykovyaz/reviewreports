@@ -13,6 +13,7 @@ from src.agent.server import acp
 from src.model import model_manager
 from src.utils import dedent
 from src.transformation.types import A2ERequest, A2EResponse
+from src.model_defaults import DEFAULT_MODEL
 
 
 def create_composed_environment_class(selected_agent_infos, env_name: str, env_description: str, metadata_: Dict[str, Any]):
@@ -177,7 +178,7 @@ class A2ETransformer:
             
             from src.message.types import HumanMessage
             response = await model_manager(
-                model="openrouter/gemini-3-flash-preview",
+                model=DEFAULT_MODEL,
                 messages=[HumanMessage(content=prompt)],
                 response_format=DynamicComposedArgs
             )

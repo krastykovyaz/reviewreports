@@ -12,6 +12,7 @@ from src.message.types import HumanMessage, SystemMessage
 from src.utils import dedent
 from src.registry import TOOL
 import warnings
+from src.model_defaults import DEFAULT_MODEL
 warnings.filterwarnings("ignore", category=UserWarning, module="firecrawl")
 
 _WEB_SEARCHER_DESCRIPTION = """Search the web for real-time information about any topic.
@@ -39,7 +40,7 @@ class WebSearcherTool(Tool):
     fetch_content: bool = Field(default=True, description="Whether to fetch content from the search results")
     summarize_pages: bool = Field(default=True, description="Whether to summarize each page based on the query")
     merge_summaries: bool = Field(default=True, description="Whether to merge all summaries into a final report")
-    model_name: str = Field(default="openrouter/gemini-3-flash-preview", description="The model to use for summarization")
+    model_name: str = Field(default=DEFAULT_MODEL, description="The model to use for summarization")
     search_tools: Dict[str, Any] = Field(default=None, description="The search tools to use")
     content_fetcher: WebFetcherTool = Field(default=None, description="The content fetcher to use")
 

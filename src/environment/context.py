@@ -19,6 +19,7 @@ from src.environment.faiss.service import FaissService
 from src.environment.faiss.types import FaissAddRequest
 from src.dynamic import dynamic_manager
 from src.registry import ENVIRONMENT
+from src.model_defaults import DEFAULT_MODEL
 
 class EnvironmentContextManager(BaseModel):
     """Global context manager for all environments with lazy loading support."""
@@ -32,7 +33,7 @@ class EnvironmentContextManager(BaseModel):
                  base_dir: Optional[str] = None,
                  save_path: Optional[str] = None, 
                  contract_path: Optional[str] = None,
-                 model_name: str = "openrouter/gemini-3-flash-preview",
+                 model_name: str = DEFAULT_MODEL,
                  embedding_model_name: str = "openrouter/text-embedding-3-large",
                  **kwargs):
         """Initialize the environment context manager.
