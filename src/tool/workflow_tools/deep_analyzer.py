@@ -33,6 +33,7 @@ from src.message import (
     PdfURL)
 from src.utils import make_file_url
 from src.registry import TOOL
+from src.model_defaults import DEFAULT_MODEL, DEFAULT_PLUGINS_MODEL
 
 class FileTypeInfo(BaseModel):
     """File type information for a single file."""
@@ -112,7 +113,7 @@ class DeepAnalyzerTool(Tool):
     max_steps: int = Field(default=3, description="Maximum steps for image analysis without finding answer")
     
     model_name: str = Field(
-        default="openrouter/gemini-3-flash-preview",
+        default=DEFAULT_MODEL,
         description="The model to use for the deep analyzer."
     )
     mdify_tool: MdifyTool = Field(
@@ -128,7 +129,7 @@ class DeepAnalyzerTool(Tool):
         description="The base directory to use for the deep analyzer."
     )
     file_model_name: str = Field(
-        default="openrouter/gemini-3-flash-preview-plugins",
+        default=DEFAULT_PLUGINS_MODEL,
         description="The model to use for the file analysis."
     )
 

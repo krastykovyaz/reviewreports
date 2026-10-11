@@ -15,6 +15,7 @@ from src.model import model_manager
 from src.message import HumanMessage, SystemMessage
 from src.tool.types import Tool, ToolResponse, ToolExtra
 from src.utils import file_lock
+from src.model_defaults import DEFAULT_MODEL
 
 
 class ContentItem(BaseModel):
@@ -47,7 +48,7 @@ class Report(BaseModel):
     
     title: str = Field(description="The title of the report")
     items: List[ReportItem] = Field(default=[], description="The items of the report")
-    model_name: str = Field(default="openrouter/gemini-3-flash-preview", description="The model to use for extraction")
+    model_name: str = Field(default=DEFAULT_MODEL, description="The model to use for extraction")
     report_file_path: Optional[str] = Field(default=None, description="The file path where the report will be saved")
 
     def __init__(self, model_name: str = None, report_file_path: Optional[str] = None, **kwargs):
@@ -450,7 +451,7 @@ class ReportTool(Tool):
     metadata: Dict[str, Any] = Field(default={}, description="The metadata of the tool")
     
     model_name: str = Field(
-        default="openrouter/gemini-3-flash-preview",
+        default=DEFAULT_MODEL,
         description="The model to use for code generation."
     )
 

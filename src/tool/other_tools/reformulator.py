@@ -8,6 +8,7 @@ from src.model import model_manager
 from src.logger import logger
 from src.utils import dedent
 from src.registry import TOOL
+from src.model_defaults import DEFAULT_MODEL
 
 
 _REFORMULATOR_TOOL_DESCRIPTION = """Reformulator tool for reformulating final answers from agent conversations.
@@ -28,14 +29,14 @@ class ReformulatorTool(Tool):
     description: str = _REFORMULATOR_TOOL_DESCRIPTION
     metadata: Dict[str, Any] = Field(default={}, description="The metadata of the tool")
     
-    model_name: str = Field(default="openrouter/gemini-3-flash-preview", description="The model to use for reformulation.")
+    model_name: str = Field(default=DEFAULT_MODEL, description="The model to use for reformulation.")
     
     def __init__(self, model_name: Optional[str] = None, **kwargs):
         """
         Initialize the reformulator tool.
         
         Args:
-            model_name: The model to use for reformulation. Default: "openrouter/gemini-3-flash-preview"
+            model_name: The model to use for reformulation. Default: DEFAULT_MODEL
         """
         super().__init__(**kwargs)
         if model_name:

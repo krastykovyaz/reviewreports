@@ -4,7 +4,9 @@ Provides a unified interface for registering and invoking OpenAI models.
 """
 
 import os
-from typing import Optional, Dict, List, Any, Union, TYPE_CHECKING
+import re
+import time
+from typing import Optional, Dict, List, Any, Tuple, Union, TYPE_CHECKING
 from pydantic import BaseModel
 
 from dotenv import load_dotenv
@@ -22,6 +24,16 @@ from src.model.google.chat import ChatGoogle
 from src.model.huggingface.chat import ChatHuggingFace
 from src.message.types import Message
 from src.logger import logger
+from src.model_defaults import (
+    DEFAULT_MODEL,
+    GEMINI_CHAIN,
+    GOOGLE_DIRECT_EXTRA,
+    LEGACY_ALIASES,
+    NOT_FOUND_COOLDOWN_S,
+    google_name,
+    openrouter_name,
+    plugins_name,
+)
 
 if TYPE_CHECKING:
     from src.tool.types import Tool
@@ -40,6 +52,9 @@ class ModelManager:
         """Initialize the manager."""
         self.models: Dict[str, ModelConfig] = {}
         self.model_clients: Dict[str, Union[ChatOpenAI, ResponseOpenAI, TranscribeOpenAI, EmbeddingOpenAI, ChatOpenRouter, ChatAnthropic]] = {}
+        # (provider, model_id) -> time.monotonic() until which a 404/NOT_FOUND model is skipped
+        self._unavailable_until: Dict[Tuple[str, str], float] = {}
+        self._warned_aliases: set = set()
         
         # Default parameters
         self.max_tokens: int = 16384
@@ -78,6 +93,8 @@ class ModelManager:
         await self._initialize_anthropic_models()
         await self._initialize_google_models()
         logger.info(f"| Model manager initialized successfully with {len(self.models)} models.")
+        if DEFAULT_MODEL not in self.models:
+            logger.warning(f"| ⚠️ DEFAULT_MODEL={DEFAULT_MODEL!r} is not a registered model; callers relying on it will fail. Registered Gemini models: {[m for m in self.models if 'gemini' in m]}")
     
     async def _initialize_openai_models(self):
         """Initialize OpenAI models."""
@@ -435,90 +452,31 @@ class ModelManager:
                 "temperature": self.default_temperature,
                 "max_completion_tokens": self.max_tokens,
                 "fallback_model": "openrouter/o3",
-            },
-            # Gemini models for chat, vision, audio, video, pdf, etc.
-            {
-                "model_name": "openrouter/gemini-2.5-flash",
-                "model_type": "chat/completions",
-                "model_id": "google/gemini-2.5-flash",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-                "fallback_model": "openrouter/gemini-2.5-flash",
-            },
-            {
-                "model_name": "openrouter/gemini-2.5-pro",
-                "model_type": "chat/completions",
-                "model_id": "google/gemini-2.5-pro",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-                "fallback_model": "openrouter/gemini-2.5-flash",
-            },
-            {
-                "model_name": "openrouter/gemini-3-pro-preview",
-                "model_type": "chat/completions",
-                "model_id": "google/gemini-3-pro-preview",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-                "fallback_model": "openrouter/gemini-2.5-flash",
-            },
-            {
-                "model_name": "openrouter/gemini-3-flash-preview",
-                "model_type": "chat/completions",
-                "model_id": "google/gemini-3-flash-preview",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-                "fallback_model": "openrouter/gemini-2.5-flash",
-            },
-            {
-                "model_name": "openrouter/gemini-2.5-flash-plugins",
-                "model_type": "chat/completions",
-                "model_id": "google/gemini-2.5-flash",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "plugins": self.default_plugins,
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-                "fallback_model": "openrouter/gemini-2.5-flash",
-            },
-            {
-                "model_name": "openrouter/gemini-3-flash-preview-plugins",
-                "model_type": "chat/completions",
-                "model_id": "google/gemini-3-flash-preview",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "plugins": self.default_plugins,
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-                "fallback_model": "openrouter/gemini-3-flash-preview",
             }
         ]
-        
+
+        # Gemini models for chat, vision, audio, video, pdf, etc. Names, order and
+        # fallbacks all come from src/model_defaults.py (nothing is spelled out here).
+        # Each model also gets a "-plugins" twin that sends default_plugins; its
+        # fallback is the NEXT model's twin, so a 404 never silently drops the plugins.
+        for i, bare in enumerate(GEMINI_CHAIN):
+            next_bare = GEMINI_CHAIN[i + 1] if i + 1 < len(GEMINI_CHAIN) else None
+            for with_plugins in (False, True):
+                name = openrouter_name(bare)
+                fallback = openrouter_name(next_bare) if next_bare else None
+                entry = {
+                    "model_name": plugins_name(name) if with_plugins else name,
+                    "model_type": "chat/completions",
+                    "model_id": f"google/{bare}",
+                    "reasoning": {"reasoning": {"enabled": True}},
+                    "temperature": self.default_temperature,
+                    "max_completion_tokens": self.max_tokens,
+                    "fallback_model": (plugins_name(fallback) if with_plugins else fallback) if fallback else None,
+                }
+                if with_plugins:
+                    entry["plugins"] = self.default_plugins
+                chat_models.append(entry)
+
         # Register OpenRouter models
         for model in chat_models:
             config = ModelConfig(
@@ -617,45 +575,36 @@ class ModelManager:
     
     async def _initialize_google_models(self):
         """Initialize Google Gemini models."""
-        chat_models = [
-            {
-                "model_name": "google/gemini-2.5-flash",
-                "model_id": "gemini-2.5-flash",
-                "model_type": "chat/completions",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-            },
-            {
-                "model_name": "google/gemini-2.5-pro",
-                "model_id": "gemini-2.5-pro",
-                "model_type": "chat/completions",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-            },
-            {
-                "model_name": "google/gemini-3-pro-preview",
-                "model_id": "gemini-3-pro-preview",
-                "model_type": "chat/completions",
-                "reasoning": {
-                    "reasoning": {
-                        "enabled": True
-                    }
-                },
-                "temperature": self.default_temperature,
-                "max_completion_tokens": self.max_tokens,
-            },
-        ]
-        
+        chat_models: List[Dict[str, Any]] = []
+
+        # Same chain as the OpenRouter route (ids here are the bare Google names);
+        # the extras are callable on Google's own API but are in no fallback chain.
+        for i, bare in enumerate(GEMINI_CHAIN):
+            next_bare = GEMINI_CHAIN[i + 1] if i + 1 < len(GEMINI_CHAIN) else None
+            chat_models.append(
+                {
+                    "model_name": google_name(bare),
+                    "model_id": bare,
+                    "model_type": "chat/completions",
+                    "reasoning": {"reasoning": {"enabled": True}},
+                    "temperature": self.default_temperature,
+                    "max_completion_tokens": self.max_tokens,
+                    "fallback_model": google_name(next_bare) if next_bare else None,
+                }
+            )
+        for bare in GOOGLE_DIRECT_EXTRA:
+            chat_models.append(
+                {
+                    "model_name": google_name(bare),
+                    "model_id": bare,
+                    "model_type": "chat/completions",
+                    "reasoning": {"reasoning": {"enabled": True}},
+                    "temperature": self.default_temperature,
+                    "max_completion_tokens": self.max_tokens,
+                    "fallback_model": google_name(GEMINI_CHAIN[0]),
+                }
+            )
+
         # Register Google models
         for model in chat_models:
             config = ModelConfig(
@@ -885,6 +834,100 @@ class ModelManager:
         await self._create_client(config)
         logger.info(f"Registered model: {config.model_name}")
     
+    # ---- fallback chain / not-found cooldown ---------------------------------------
+
+    _NOT_FOUND_RE = re.compile(
+        r"Error code: 404|NOT_FOUND|\b404\b[^\n]{0,80}not found|is not found for API version"
+        r"|not a valid model|no endpoints found|model [^\n]{0,80}(does not exist|is not available|has been (retired|deprecated|removed))",
+        re.IGNORECASE,
+    )
+
+    def _resolve_alias(self, model: str) -> str:
+        target = LEGACY_ALIASES.get(model)
+        if target is None or model in self.models:
+            return model
+        if model not in self._warned_aliases:
+            self._warned_aliases.add(model)
+            logger.warning(f"| ⚠️ Model {model} is retired or unavailable; routing to {target}. Update the caller to use DEFAULT_MODEL.")
+        return target
+
+    def _fallback_chain(self, model: str) -> List[str]:
+        """[model, its fallback, that one's fallback, ...] without repeats (several
+        configs point at each other, and one pointed at itself)."""
+        chain: List[str] = []
+        name: Optional[str] = model
+        while name and name not in chain and len(chain) < 8:
+            chain.append(name)
+            config = self.models.get(name)
+            name = config.fallback_model if config else None
+        return chain
+
+    def _availability_key(self, name: str) -> Tuple[str, str]:
+        """Keyed by provider + model id, not registry name: 'X' and 'X-plugins' are the
+        same remote model, so one 404 must skip both."""
+        config = self.models.get(name)
+        return (config.provider, config.model_id) if config else ("?", name)
+
+    def _skipped_until(self, name: str) -> float:
+        return self._unavailable_until.get(self._availability_key(name), 0.0)
+
+    def _mark_unavailable(self, name: str, reason: str) -> None:
+        self._unavailable_until[self._availability_key(name)] = time.monotonic() + NOT_FOUND_COOLDOWN_S
+        logger.warning(
+            f"| ⚠️ Model {name} returned 404/NOT_FOUND ({str(reason)[:160]}); skipping it for {int(NOT_FOUND_COOLDOWN_S // 60)} min "
+            f"instead of retrying it on every request."
+        )
+
+    @classmethod
+    def _is_not_found(cls, outcome: Any) -> bool:
+        """True for a 404/NOT_FOUND failure, whether raised or returned: the provider
+        clients return LLMResponse(success=False) rather than raising on API errors."""
+        if isinstance(outcome, BaseException):
+            return bool(cls._NOT_FOUND_RE.search(str(outcome)))
+        if not isinstance(outcome, LLMResponse) or outcome.success:
+            return False
+        data = outcome.extra.data if outcome.extra and isinstance(outcome.extra.data, dict) else {}
+        return data.get("status_code") == 404 or bool(cls._NOT_FOUND_RE.search(outcome.message or ""))
+
+    async def _invoke(
+        self,
+        name: str,
+        messages: List[Message],
+        tools: Optional[List["Tool"]],
+        response_format: Optional[Union[BaseModel, Dict]],
+        stream: bool,
+        plugins: Optional[List[Dict[str, Any]]],
+        kwargs: Dict[str, Any],
+    ) -> LLMResponse:
+        client = self.model_clients.get(name)
+        if not client:
+            raise ValueError(f"Model {name} not found. Available models: {list(self.models.keys())}")
+        model_config = self.models.get(name)
+
+        if model_config and model_config.model_type == "transcriptions":
+            # Transcription models use messages parameter (extracts audio from messages)
+            if messages is None:
+                raise ValueError("messages parameter is required for transcription models")
+            return await client(messages=messages, **kwargs)
+        if model_config and model_config.model_type == "embeddings":
+            # Embedding models use messages parameter (extracts text from messages)
+            # Filter out unsupported parameters (tools, response_format, stream)
+            embedding_kwargs = {k: v for k, v in kwargs.items() if k not in ["tools", "response_format", "stream"]}
+            if messages is None:
+                raise ValueError("messages parameter is required for embedding models")
+            return await client(messages=messages, **embedding_kwargs)
+
+        # Chat/response models use messages parameter
+        if messages is None:
+            raise ValueError("messages parameter is required for chat/response models")
+        # `plugins` is an OpenRouter-specific extension - forwarding it (even as None)
+        # to any other provider's client reaches their underlying SDK call, which
+        # doesn't accept that keyword at all and raises a TypeError, not a no-op.
+        chat_kwargs: Dict[str, Any] = dict(messages=messages, tools=tools, response_format=response_format, stream=stream, **kwargs)
+        if isinstance(client, ChatOpenRouter):
+            chat_kwargs["plugins"] = plugins
+        return await client(**chat_kwargs)
+
     async def __call__(
         self,
         model: str,
@@ -896,8 +939,14 @@ class ModelManager:
         **kwargs: Any,
     ) -> LLMResponse:
         """
-        Invoke a model asynchronously.
-        
+        Invoke a model asynchronously, walking its fallback chain.
+
+        A model that fails with an exception, or answers 404/NOT_FOUND (retired,
+        renamed, or an id that never existed), moves the call on to its
+        `fallback_model`; a 404 model is then skipped for NOT_FOUND_COOLDOWN_S so
+        it is not retried on every request. Other error *responses* are returned
+        as-is, as before. Every call logs which model actually answered.
+
         Args:
             model: Model name
             messages: List of Message objects (for transcription models, should contain ContentPartAudio)
@@ -905,113 +954,57 @@ class ModelManager:
             response_format: Optional response format (Pydantic model or dict)
             stream: Whether to stream the response
             **kwargs: Additional parameters
-            
+
         Returns:
             LLMResponse with formatted message
         """
         # Validate that tools and response_format are not both provided
         if tools and response_format:
             raise ValueError("tools and response_format cannot be used together")
-        
-        current_model = model
-        try:
-            # Get client for the model
-            client = self.model_clients.get(current_model)
-            if not client:
-                raise ValueError(f"Model {current_model} not found. Available models: {list(self.models.keys())}")
-            
-            # Check model type and call appropriate method
-            model_config = self.models.get(current_model)
-            
-            if model_config and model_config.model_type == "transcriptions":
-                # Transcription models use messages parameter (extracts audio from messages)
-                if messages is None:
-                    raise ValueError("messages parameter is required for transcription models")
-                result = await client(
-                    messages=messages,
-                    **kwargs,
-                )
-            elif model_config and model_config.model_type == "embeddings":
-                # Embedding models use messages parameter (extracts text from messages)
-                # Filter out unsupported parameters (tools, response_format, stream)
-                embedding_kwargs = {k: v for k, v in kwargs.items() if k not in ['tools', 'response_format', 'stream']}
-                if messages is None:
-                    raise ValueError("messages parameter is required for embedding models")
-                result = await client(
-                    messages=messages,
-                    **embedding_kwargs,
-                )
+
+        requested = model
+        model = self._resolve_alias(model)
+        chain = self._fallback_chain(model)
+        now = time.monotonic()
+        candidates = [name for name in chain if self._skipped_until(name) <= now]
+        if not candidates:
+            waits = ", ".join(f"{n} ({int(self._skipped_until(n) - now)}s left)" for n in chain)
+            logger.error(f"| Every model in the chain for {requested} is skipped after 404/NOT_FOUND: {waits}")
+            return LLMResponse(success=False, message=f"No available model for {requested}: all of [{waits}] returned 404/NOT_FOUND recently.")
+
+        failures: List[Tuple[str, str]] = []
+        for name in candidates:
+            try:
+                result = await self._invoke(name, messages, tools, response_format, stream, plugins, kwargs)
+            except Exception as exc:  # noqa: BLE001 - any failure moves on to the next model
+                if self._is_not_found(exc):
+                    self._mark_unavailable(name, str(exc))
+                else:
+                    logger.warning(f"| ⚠️ Model {name} failed ({type(exc).__name__}: {str(exc)[:160]}); trying the next model in its chain.")
+                failures.append((name, str(exc)))
+                continue
+
+            if self._is_not_found(result):
+                self._mark_unavailable(name, result.message)
+                failures.append((name, result.message))
+                continue
+
+            config = self.models.get(name)
+            detail = f"{config.provider}:{config.model_id}" if config else name
+            if not isinstance(result, LLMResponse) or result.success:
+                note = "" if name == requested else f" (requested {requested})"
+                logger.info(f"| Model answered: {name} [{detail}]{note}")
             else:
-                # Chat/response models use messages parameter
-                if messages is None:
-                    raise ValueError("messages parameter is required for chat/response models")
-                # `plugins` is an OpenRouter-specific extension - forwarding it
-                # (even as None) to any other provider's client reaches their
-                # underlying SDK call, which doesn't accept that keyword at
-                # all and raises a TypeError, not just a no-op.
-                chat_kwargs: Dict[str, Any] = dict(messages=messages, tools=tools, response_format=response_format, stream=stream, **kwargs)
-                if isinstance(client, ChatOpenRouter):
-                    chat_kwargs["plugins"] = plugins
-                result = await client(**chat_kwargs)
-            
+                logger.warning(f"| ⚠️ Model {name} [{detail}] returned an error response (requested {requested}).")
             return result
-            
-        except Exception as e:
-            # Check if we have a fallback model
-            model_config = self.models.get(current_model)
-            if model_config and model_config.fallback_model:
-                fallback_model = model_config.fallback_model
-                logger.warning(f"| Primary model {current_model} failed, falling back to {fallback_model}: {e}")
-                try:
-                    # Retry with fallback model
-                    fallback_client = self.model_clients.get(fallback_model)
-                    if not fallback_client:
-                        raise ValueError(f"Fallback model {fallback_model} not found")
-                    
-                    # Check fallback model type
-                    fallback_config = self.models.get(fallback_model)
-                    if fallback_config and fallback_config.model_type == "transcriptions":
-                        # Transcription models use messages parameter (extracts audio from messages)
-                        if messages is None:
-                            raise ValueError("messages parameter is required for transcription models")
-                        result = await fallback_client(
-                            messages=messages,
-                            **kwargs,
-                        )
-                    elif fallback_config and fallback_config.model_type == "embeddings":
-                        # Embedding models use messages parameter (extracts text from messages)
-                        # Filter out unsupported parameters (tools, response_format, stream)
-                        embedding_kwargs = {k: v for k, v in kwargs.items() if k not in ['tools', 'response_format', 'stream']}
-                        if messages is None:
-                            raise ValueError("messages parameter is required for embedding models")
-                        result = await fallback_client(
-                            messages=messages,
-                            **embedding_kwargs,
-                        )
-                    else:
-                        # Chat/response models use messages parameter
-                        if messages is None:
-                            raise ValueError("messages parameter is required for chat/response models")
-                        fallback_chat_kwargs: Dict[str, Any] = dict(messages=messages, tools=tools, response_format=response_format, stream=stream, **kwargs)
-                        if isinstance(fallback_client, ChatOpenRouter):
-                            fallback_chat_kwargs["plugins"] = plugins
-                        result = await fallback_client(**fallback_chat_kwargs)
-                    logger.info(f"| Fallback model {fallback_model} succeeded")
-                    return result
-                except Exception as fallback_error:
-                    logger.error(f"| Fallback model {fallback_model} also failed: {fallback_error}")
-                    return LLMResponse(
-                        success=False,
-                        message=f"Both primary model ({current_model}) and fallback model ({fallback_model}) failed. Primary error: {e}, Fallback error: {fallback_error}",
-                        extra=None
-                    )
-            
-            logger.error(f"Model invocation failed: {e}")
-            return LLMResponse(
-                success=False,
-                message=str(e)
-            )
-    
+
+        if len(failures) == 1:
+            logger.error(f"Model invocation failed: {failures[0][1]}")
+            return LLMResponse(success=False, message=failures[0][1])
+        summary = "; ".join(f"{n}: {m[:200]}" for n, m in failures)
+        logger.error(f"| Every model in the fallback chain for {requested} failed: {summary}")
+        return LLMResponse(success=False, message=f"All models in the fallback chain for {requested} failed. {summary}")
+
     async def get_model_config(self, model: str) -> Optional[ModelConfig]:
         """Get the configuration for a model."""
         return await self.models.get(model)
