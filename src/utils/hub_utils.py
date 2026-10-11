@@ -19,10 +19,39 @@ from glob import glob
 from dotenv import load_dotenv
 load_dotenv(verbose=True)
 
-from huggingface_hub import (
-    upload_large_folder,
-    HfApi
-)
+from huggingface_hub import HfApi
+
+
+def _upload_folder(api, *, repo_id, folder_path, repo_type, ignore_patterns):
+    """huggingface_hub 2.x removed upload_large_folder entirely - both the top-level
+    function and the HfApi method (verified against 2.2.0). It used to be imported at
+    module level, so on a fresh install that resolved to 2.x `import src.utils` failed,
+    and with it every module that imports src.logger: the whole test suite, and the
+    service. This helper is only needed when pushing to the hub, so it is looked up
+    here instead, with upload_folder (a single commit, so less suited to very large
+    folders) as the fallback."""
+    try:
+        from huggingface_hub import upload_large_folder
+    except ImportError:
+        upload_large_folder = None
+
+    if upload_large_folder is not None:
+        upload_large_folder(
+            repo_id=repo_id,
+            folder_path=folder_path,
+            revision="main",
+            ignore_patterns=ignore_patterns,
+            repo_type=repo_type,
+            num_workers=4,
+        )
+    else:
+        api.upload_folder(
+            repo_id=repo_id,
+            folder_path=folder_path,
+            revision="main",
+            ignore_patterns=ignore_patterns,
+            repo_type=repo_type,
+        )
 
 def generate_readme(repo_id: str, folder_path: str) -> str:
     lines = [
@@ -107,11 +136,4 @@ def push_to_hub_folder(
 
     os.environ["HF_TOKEN"] = hf_token
 
-    upload_large_folder(
-        repo_id=repo_id,
-        folder_path=folder_path,
-        revision="main",
-        ignore_patterns=ignore_patterns,
-        repo_type=repo_type,
-        num_workers=4
-    )
+    _upload_folder(api, repo_id=repo_id, folder_path=folder_path, repo_type=repo_type, ignore_patterns=ignore_patterns)
