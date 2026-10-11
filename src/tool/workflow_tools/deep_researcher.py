@@ -16,6 +16,7 @@ from src.tool.types import Tool, ToolResponse, ToolExtra
 from src.tool.default_tools.web_searcher import WebSearcherTool
 from src.registry import TOOL
 from src.tool.workflow_tools.report import Report
+from src.model_defaults import DEFAULT_MODEL
 
 
 _DEEP_RESEARCHER_DESCRIPTION = """Deep research tool that performs multi-round web search and content analysis.
@@ -52,7 +53,7 @@ class DeepResearcherTool(Tool):
     max_rounds: int = Field(default=3, description="Maximum search rounds")
     num_results: int = Field(default=5, description="Number of search results per round")
     model_name: str = Field(
-        default="openrouter/gemini-3-flash-preview",
+        default=DEFAULT_MODEL,
         description="The model to use for query generation and answer evaluation."
     )
     web_searcher: WebSearcherTool = Field(

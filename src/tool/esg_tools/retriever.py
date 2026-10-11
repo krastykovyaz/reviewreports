@@ -29,6 +29,7 @@ from src.tool.esg_tools.lightrag.llm.ollama import ollama_embed
 from src.tool.esg_tools.lightrag.utils import EmbeddingFunc
 from src.tool.esg_tools.lightrag.llm.ollama import ollama_model_complete, ollama_embed
 import functools
+from src.model_defaults import DEFAULT_MODEL
 
 llm_func = functools.partial(
     ollama_model_complete,
@@ -85,7 +86,7 @@ class RetrieverTool(Tool):
 
     # Configuration parameters
     model_name: str = Field(
-        default="openrouter/gemini-3-flash-preview",
+        default=DEFAULT_MODEL,
         description="The model to use for metadata extraction."
     )
     base_dir: str = Field(

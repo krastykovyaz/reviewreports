@@ -13,6 +13,7 @@ from src.logger import logger
 from src.agent.types import AgentConfig, Agent
 from src.agent.context import AgentContextManager
 from src.utils import assemble_project_path
+from src.model_defaults import DEFAULT_MODEL
 
 class ACPServer(BaseModel):
     """ACP Server for managing agent registration and execution with lazy loading."""
@@ -46,7 +47,7 @@ class ACPServer(BaseModel):
             base_dir=self.base_dir,
             save_path=self.save_path,
             contract_path=self.contract_path,
-            model_name="openrouter/gemini-3-flash-preview",
+            model_name=DEFAULT_MODEL,
             embedding_model_name="openrouter/text-embedding-3-large",
         )
         await self.agent_context_manager.initialize(agent_names=agent_names)

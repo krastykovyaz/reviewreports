@@ -12,6 +12,7 @@ from src.config import config
 from src.tool.context import ToolContextManager
 from src.tool.types import Tool, ToolConfig, ToolResponse
 from src.utils import assemble_project_path
+from src.model_defaults import DEFAULT_MODEL
 
 class TCPServer(BaseModel):
     """TCP Server for managing tool registration and execution with lazy loading."""
@@ -45,7 +46,7 @@ class TCPServer(BaseModel):
             base_dir=self.base_dir,
             save_path=self.save_path,
             contract_path=self.contract_path,
-            model_name="openrouter/gemini-3-flash-preview",
+            model_name=DEFAULT_MODEL,
             embedding_model_name="openrouter/text-embedding-3-large",
         )
         await self.tool_context_manager.initialize(tool_names=tool_names)

@@ -13,6 +13,7 @@ from src.utils import assemble_project_path
 from src.tool.types import Tool, ToolResponse, ToolExtra
 from src.message import HumanMessage, SystemMessage
 from src.tool.default_tools.python_interpreter import PythonInterpreterTool
+from src.model_defaults import DEFAULT_MODEL
 
 class CodeGeneration(BaseModel):
     """Generated Python code for data conversion or plotting."""
@@ -53,7 +54,7 @@ class PlotterTool(Tool):
 
     # Configuration parameters
     model_name: str = Field(
-        default="openrouter/gemini-3-flash-preview",
+        default=DEFAULT_MODEL,
         description="The model to use for code generation."
     )
     base_dir: str = Field(

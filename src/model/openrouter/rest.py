@@ -142,7 +142,7 @@ class OpenRouterCompletions:
         Create a chat completion (similar to OpenAI's chat.completions.create).
         
         Args:
-            model: Model identifier (e.g., "google/gemini-2.5-flash")
+            model: Model identifier (e.g., "google/<model-id>")
             messages: List of message dictionaries
             plugins: Optional list of plugins (e.g., for PDF parsing)
             **kwargs: Additional parameters (temperature, max_completion_tokens, tools, etc.)
