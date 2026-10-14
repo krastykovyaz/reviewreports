@@ -55,7 +55,11 @@
     background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 5px 10px;
   }
-  .card .downloads a:hover { border-color: #999; color: var(--text); }
+  .card .downloads a:hover, .card .downloads button:hover { border-color: #999; color: var(--text); }
+  .card .downloads button {
+    font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--text2); cursor: pointer;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px;
+  }
   .tsech-footer {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -91,12 +95,30 @@
       {% endif %}
       <div class="downloads">
         <a href="/audit/cv/{{ cv_id }}/original?download=1">{{ t('ui.cv.download_original') }}</a>
+        {# A PDF's link opens it in the browser's viewer; a Word file's link opens its readable preview (a bare .docx link would just download). #}
+        <button type="button" class="copylink" data-copied="{{ t('ui.cv.link_copied') }}"
+                data-path="/audit/cv/{{ cv_id }}/original{% if original.kind != 'pdf' %}.html{% endif %}">{{ t('ui.cv.copy_link') }}</button>
       </div>
     </div>
     {% endif %}
   </div>
 
   <script>
+    document.querySelectorAll('.copylink').forEach(function (btn) {
+      var label = btn.textContent;
+      btn.addEventListener('click', function () {
+        var url = location.origin + btn.getAttribute('data-path');
+        function done() { btn.textContent = btn.getAttribute('data-copied'); setTimeout(function () { btn.textContent = label; }, 2000); }
+        function fallback() {
+          var ta = document.createElement('textarea'); ta.value = url; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+          document.body.appendChild(ta); ta.focus(); ta.select();
+          try { document.execCommand('copy'); done(); } catch (e) { window.prompt('', url); }
+          document.body.removeChild(ta);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, fallback); else fallback();
+      });
+    });
+
     // Fit each template page to its card and make it as tall as its content, so a CV longer than one
     // page is shown whole and nothing is cut off at the right or bottom.
     (function () {

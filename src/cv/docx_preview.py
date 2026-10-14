@@ -109,6 +109,7 @@ _CSS = """
   h1 { font-size: 22px; margin: 0 0 8px; } h2 { font-size: 16px; margin: 16px 0 6px; border-bottom: 1px solid #ccc; padding-bottom: 3px; } h3 { font-size: 14px; margin: 12px 0 4px; }
   p { margin: 0 0 6px; } ul { margin: 0 0 8px; padding-left: 22px; } li { margin: 0 0 2px; }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; } td { vertical-align: top; padding: 3px 8px 3px 0; }
+  @media (max-width: 560px) { body { padding: 8px; font-size: 12px; } .page { padding: 16px 14px; } h1 { font-size: 17px; } h2 { font-size: 14px; } }
 """
 
 

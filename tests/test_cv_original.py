@@ -205,3 +205,23 @@ async def test_plain_reads_never_load_the_original_bytes(tmp_path):
     await store.set_original(cv_id, b"%PDF-" + b"x" * 1000, "a.pdf", "pdf")
     row = await store.get(cv_id)
     assert row["has_original"] == 1 and "original" not in row
+
+
+# ── share page: the Original card's Copy link button ──
+
+def test_the_share_page_has_a_copy_link_button_for_a_pdf_original(client):
+    d = _up(client, _cv_pdf())
+    page = client.get(f"/cv-builder/{d['id']}").text
+    assert f'data-path="/audit/cv/{d["id"]}/original"' in page and 'class="copylink"' in page
+    assert f"/audit/cv/{d['id']}/original?download=1" in page  # the download link is still there beside it
+
+
+def test_a_word_originals_link_points_at_its_readable_preview(client):
+    d = _up(client, _docx(_CV_LINES), "resume.docx")
+    assert f'data-path="/audit/cv/{d["id"]}/original.html"' in client.get(f"/cv-builder/{d['id']}").text
+
+
+def test_no_original_card_or_copy_button_without_an_original(client):
+    d = client.post("/cv/from-text", json={"text": "Jordan Reyes, engineer, jordan@example.com"}).json()
+    page = client.get(f"/cv-builder/{d['id']}").text
+    assert 'class="copylink"' not in page and "/original" not in page.split("<script>")[0]
