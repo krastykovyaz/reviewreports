@@ -81,6 +81,17 @@ class JobStore:
             await db.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", (*fields.values(), job_id))
             await db.commit()
 
+    async def purge_expired(self, cutoff_iso: str) -> list:
+        """Deletes reports not updated since cutoff; returns [(id, subject)] so an uploaded file a job pointed at can be removed."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT id, subject FROM jobs WHERE updated_at < ?", (cutoff_iso,)) as cursor:
+                rows = [(r[0], r[1]) async for r in cursor]
+            if rows:
+                await db.execute("DELETE FROM jobs WHERE updated_at < ?", (cutoff_iso,))
+                await db.commit()
+                await db.execute("VACUUM")
+        return rows
+
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

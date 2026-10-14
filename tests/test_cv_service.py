@@ -139,7 +139,9 @@ def test_get_rendered_html_includes_og_meta_for_direct_sharing(client):
     assert resp.status_code == 200
     assert '<meta property="og:title" content="Jordan Reyes — CV">' in resp.text
     assert '<meta property="og:description" content="Senior Backend Engineer' in resp.text
-    assert '<meta property="og:image" content="https://tsech.online/logo.png">' in resp.text
+    # A per-CV image of the requested template (not the generic logo), as the large card.
+    assert f'<meta property="og:image" content="https://tsech.online/audit/cv/{cv_id}/preview.jpg?template=compact">' in resp.text
+    assert 'twitter:card" content="summary_large_image"' in resp.text
     # Reflects the actually-requested template, not the CV's stored default.
     assert f'og:url" content="https://tsech.online/audit/cv/{cv_id}.html?template=compact">' in resp.text
 
@@ -271,7 +273,7 @@ def test_cv_builder_result_page_share_meta_includes_role(client):
     resp = client.post("/cv-builder", data=_FORM_PAYLOAD, follow_redirects=True)
     assert 'og:title" content="Jordan Reyes — CV"' in resp.text
     assert 'og:description" content="Senior Backend Engineer' in resp.text
-    assert 'og:image" content="https://tsech.online/logo.png"' in resp.text
+    assert 'og:image" content="https://tsech.online/audit/cv/' in resp.text and '/preview.jpg?template=' in resp.text
     assert f'og:url" content="https://tsech.online/audit/cv-builder/' in resp.text
 
 

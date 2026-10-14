@@ -8,12 +8,17 @@
 <meta property="og:site_name" content="tsech">
 <meta property="og:title" content="{{ meta_title }}">
 <meta property="og:description" content="{{ meta_description }}">
-<meta property="og:image" content="https://tsech.online/logo.png">
+<meta property="og:image" content="{{ og_image }}">
+<meta property="og:image:secure_url" content="{{ og_image }}">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{{ meta_title }}">
 <meta property="og:url" content="https://tsech.online/audit/cv-builder/{{ cv_id }}">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{{ meta_title }}">
 <meta name="twitter:description" content="{{ meta_description }}">
-<meta name="twitter:image" content="https://tsech.online/logo.png">
+<meta name="twitter:image" content="{{ og_image }}">
 <style>
   :root {
     color-scheme: light;
@@ -95,9 +100,9 @@
       {% endif %}
       <div class="downloads">
         <a href="/audit/cv/{{ cv_id }}/original?download=1">{{ t('ui.cv.download_original') }}</a>
-        {# A PDF's link opens it in the browser's viewer; a Word file's link opens its readable preview (a bare .docx link would just download). #}
+        {# The original's own page (PDF in the viewer / Word as a readable preview): it carries the preview card a bare file URL can't. #}
         <button type="button" class="copylink" data-copied="{{ t('ui.cv.link_copied') }}"
-                data-path="/audit/cv/{{ cv_id }}/original{% if original.kind != 'pdf' %}.html{% endif %}">{{ t('ui.cv.copy_link') }}</button>
+                data-path="/audit/cv/{{ cv_id }}/original.html?lang={{ lang }}">{{ t('ui.cv.copy_link') }}</button>
       </div>
     </div>
     {% endif %}

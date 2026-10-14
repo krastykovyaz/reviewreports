@@ -23,14 +23,18 @@ templates side by side, pick one, download).
 """
 
 import asyncio
+import hashlib
 import html
 import json
+import logging
 import os
 import re
 import unicodedata
 import uuid
 from urllib.parse import quote
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -42,6 +46,7 @@ from src.cv.extract import edit_cv_profile, extract_cv_profile
 from src.cv.doc_text import DocError, extract_document_text
 from src.cv.docx_preview import docx_to_html
 from src.cv.pdf_text import MAX_CHARS as CV_TEXT_MAX_CHARS, MAX_UPLOAD_BYTES as CV_PDF_MAX_BYTES
+from src.cv.preview_card import RasterError, compose_card, rasterize_first_page
 from src.cv.photo import MAX_UPLOAD_BYTES as CV_PHOTO_MAX_BYTES, process_cv_photo, to_data_uri
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
 from src.cv.schema import Contact, CVProfile, Education, Experience
@@ -119,6 +124,93 @@ _audit_gate = asyncio.Semaphore(_AUDIT_CONCURRENCY)
 _llm_gate = asyncio.Semaphore(_LLM_CONCURRENCY)
 # Reading an uploaded PDF is CPU work done in a thread; keep a handful from piling up.
 _pdf_gate = asyncio.Semaphore(2)
+# Rendering a link-preview image (CV -> PDF -> PNG -> card) is the heaviest request a crawler can trigger:
+# one at a time, waiting its turn briefly rather than rejecting (a crawler that is refused may not retry).
+_preview_gate = asyncio.Semaphore(1)
+_preview_locks: dict = {}
+_PREVIEW_DIR = Path(assemble_project_path("workdir/service/previews"))
+_PREVIEW_SITE = "https://tsech.online/audit"
+
+logger = logging.getLogger("reviewreports")
+
+
+# ---- retention -------------------------------------------------------------------------
+# Everything a person creates here (CVs with their photo, uploaded original and preview images; audit
+# reports) is deleted this many days after it last CHANGED - opening a link doesn't extend it, otherwise a
+# link that is only ever viewed would live forever. tsech's own projects already follow the same rule.
+def _retention_days() -> float:
+    try:
+        return float(os.getenv("RETENTION_DAYS", "7"))
+    except ValueError:
+        return 7.0
+
+
+def _expires_at(updated_iso: Optional[str]) -> Optional[str]:
+    if not updated_iso:
+        return None
+    try:
+        return (datetime.fromisoformat(updated_iso) + timedelta(days=_retention_days())).isoformat()
+    except ValueError:
+        return None
+
+
+def _expires_from_now() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=_retention_days())).isoformat()
+
+
+def _retention_marker() -> Path:
+    return Path(assemble_project_path("workdir/service/.retention_started"))
+
+
+def _drop_preview_files(cv_id: str) -> None:
+    for f in _PREVIEW_DIR.glob(f"{cv_id}.*.jpg"):
+        f.unlink(missing_ok=True)
+
+
+async def _purge_expired(now: Optional[datetime] = None) -> dict:
+    """Deletes expired CVs and reports and everything derived from them. The first time this ever runs it
+    records its start and does nothing for one full retention period, so data that already existed isn't
+    wiped the moment this ships - its clock starts then, not at some arbitrary past date."""
+    now = now or datetime.now(timezone.utc)
+    days = _retention_days()
+    marker = _retention_marker()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    if not marker.exists():
+        marker.write_text(now.isoformat())
+    try:
+        started = datetime.fromisoformat(marker.read_text().strip())
+    except ValueError:
+        started = now
+    # Preview images of CVs that no longer exist (e.g. deleted while one was rendering) are always safe to drop.
+    if _PREVIEW_DIR.exists():
+        for f in _PREVIEW_DIR.glob("*.jpg"):
+            if await _cv_store.get(f.name.split(".")[0]) is None:
+                f.unlink(missing_ok=True)
+    if now < started + timedelta(days=days):
+        return {"cvs": 0, "reports": 0, "skipped": True}
+    cutoff = (now - timedelta(days=days)).isoformat()
+    cv_ids = await _cv_store.purge_expired(cutoff)
+    for cv_id in cv_ids:
+        _drop_preview_files(cv_id)
+    reports = await _store.purge_expired(cutoff)
+    upload_root = os.path.realpath(_UPLOAD_DIR)
+    for _id, subject in reports:
+        # A report built from an uploaded file points at it; only ever remove files that live in the uploads dir.
+        real = os.path.realpath(subject) if isinstance(subject, str) else ""
+        if real.startswith(upload_root + os.sep) and os.path.isfile(real):
+            os.unlink(real)
+    return {"cvs": len(cv_ids), "reports": len(reports), "skipped": False}
+
+
+async def _retention_loop():
+    while True:
+        try:
+            result = await _purge_expired()
+            if result["cvs"] or result["reports"]:
+                logger.info("retention: deleted %s CVs and %s reports", result["cvs"], result["reports"])
+        except Exception:
+            logger.exception("retention purge failed")
+        await asyncio.sleep(3600)
 
 
 class ServerBusy(Exception):
@@ -147,7 +239,10 @@ async def lifespan(app: FastAPI):
     # models: []" - model_manager's registry is only populated by this call,
     # and nothing else in the service was triggering it.
     await model_manager.initialize()
+    loop_task = None if os.getenv("DISABLE_RETENTION_LOOP") == "1" else asyncio.create_task(_retention_loop())
     yield
+    if loop_task:
+        loop_task.cancel()
 
 
 app = FastAPI(title="reviewreports", lifespan=lifespan)
@@ -264,8 +359,10 @@ class CreateCVRequest(CVProfile):
     template: str = "modern"
 
 
-def _orig(row: dict) -> dict:
-    return {"has_original": bool(row.get("has_original")), "original_name": row.get("original_name"), "original_kind": row.get("original_kind")}
+def _orig(row: dict, fresh: bool = False) -> dict:
+    """The stored-file fields and expiry every CV response carries. fresh: the call just changed the CV."""
+    return {"has_original": bool(row.get("has_original")), "original_name": row.get("original_name"), "original_kind": row.get("original_kind"),
+            "expires_at": _expires_from_now() if fresh else _expires_at(row.get("updated_at"))}
 
 
 def _safe_filename(name: Optional[str], kind: str) -> str:
@@ -286,6 +383,8 @@ class CVResponse(BaseModel):
     has_original: bool = False
     original_name: Optional[str] = None
     original_kind: Optional[str] = None
+    # When this CV and everything stored for it will be deleted if it isn't changed again (see retention above).
+    expires_at: Optional[str] = None
 
 
 class CVCreateResponse(CVResponse):
@@ -303,7 +402,8 @@ async def create_cv(request: CreateCVRequest):
 
     profile = CVProfile.model_validate(request.model_dump(exclude={"template"}))
     cv_id, edit_token = await _cv_store.create(profile, request.template)
-    return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token)
+    _prewarm_preview(cv_id)
+    return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token, expires_at=_expires_from_now())
 
 
 class CreateCVFromTextRequest(BaseModel):
@@ -338,7 +438,8 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
         raise HTTPException(status_code=422, detail="Could not extract a CV from that text")
 
     cv_id, edit_token = await _cv_store.create(profile, request.template)
-    return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token)
+    _prewarm_preview(cv_id)
+    return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token, expires_at=_expires_from_now())
 
 
 class CVCreateFromFileResponse(CVCreateResponse):  # also carries has_original/original_name/original_kind
@@ -394,7 +495,8 @@ async def create_cv_from_file(
     kind = "pdf" if b"%PDF-" in raw[:1024] else "docx"
     orig_name = _safe_filename(file.filename, kind)
     await _cv_store.set_original(cv_id, raw, orig_name, kind)
-    return CVCreateFromFileResponse(id=cv_id, template=template, profile=profile.model_dump(), edit_token=edit_token, source_text=text,
+    _prewarm_preview(cv_id)
+    return CVCreateFromFileResponse(id=cv_id, template=template, profile=profile.model_dump(), edit_token=edit_token, source_text=text, expires_at=_expires_from_now(),
                                     has_original=True, original_name=orig_name, original_kind=kind)
 
 
@@ -436,7 +538,7 @@ async def edit_cv(cv_id: str, request: EditCVRequest):
         raise HTTPException(status_code=422, detail="Could not apply that change")
 
     await _cv_store.update_profile(cv_id, revised)
-    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump(), has_photo=bool(row.get("has_photo")), **_orig(row))
+    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump(), has_photo=bool(row.get("has_photo")), **_orig(row, fresh=True))
 
 
 @app.post("/cv/{cv_id}/photo", response_model=CVResponse)
@@ -457,7 +559,8 @@ async def set_cv_photo(cv_id: str, file: UploadFile = File(...), edit_token: str
     except ValueError:
         raise HTTPException(status_code=400, detail={"code": "bad_image"})
     await _cv_store.set_photo(cv_id, jpeg)
-    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=True, **_orig(row))
+    _prewarm_preview(cv_id)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=True, **_orig(row, fresh=True))
 
 
 @app.delete("/cv/{cv_id}/photo", response_model=CVResponse)
@@ -469,7 +572,8 @@ async def remove_cv_photo(cv_id: str, x_edit_token: str = Header("")):
     if not _cv_store.verify_edit_token(row, x_edit_token):
         raise HTTPException(status_code=403, detail="Invalid or missing edit token")
     await _cv_store.set_photo(cv_id, None)
-    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=False, **_orig(row))
+    _prewarm_preview(cv_id)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=False, **_orig(row, fresh=True))
 
 
 _ORIGINAL_MEDIA = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
@@ -488,18 +592,73 @@ async def get_cv_original(cv_id: str, download: bool = False):
                     headers={"Content-Disposition": disposition, "X-Content-Type-Options": "nosniff"})
 
 
+def _pdf_original_page(cv_id: str, filename: str, download_label: str) -> str:
+    """A page around an uploaded PDF so its link can carry a preview card (a bare PDF URL can't) and so
+    the file opens in the browser's own viewer with a download button."""
+    src = f"/audit/cv/{cv_id}/original"
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(filename)}</title><style>"
+        "html,body{margin:0;height:100%;background:#f2f3f5;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}"
+        ".bar{display:flex;align-items:center;gap:12px;height:44px;padding:0 14px;background:#fff;border-bottom:1px solid #e5e5e5;font-size:13px}"
+        ".bar span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#4a4a4a}"
+        ".bar a{color:#1a1a1a;text-decoration:none;border:1px solid #e5e5e5;border-radius:5px;padding:5px 10px;font-weight:600;font-size:12px;background:#f7f7f7}"
+        "iframe{display:block;width:100%;height:calc(100% - 45px);border:0}"
+        f'</style></head><body><div class="bar"><span>{html.escape(filename)}</span><a href="{src}?download=1">{html.escape(download_label)}</a></div>'
+        f'<iframe src="{src}" title="{html.escape(filename)}"></iframe></body></html>'
+    )
+
+
 @app.get("/cv/{cv_id}/original.html", response_class=HTMLResponse)
-async def get_cv_original_preview(cv_id: str):
-    """An on-page preview of an uploaded Word file (see src/cv/docx_preview.py). PDFs preview natively."""
+async def get_cv_original_page(cv_id: str, lang: str = "en"):
+    """The shareable page for a CV's uploaded original: a PDF in the browser's viewer, a Word file as a readable
+    preview (see src/cv/docx_preview.py), either with a preview card for Telegram/WhatsApp/LinkedIn/Facebook."""
     orig = await _cv_store.get_original(cv_id)
-    if orig is None or orig["kind"] != "docx":
-        raise HTTPException(status_code=404, detail="No previewable original for this CV")
-    try:
-        page = await asyncio.to_thread(docx_to_html, orig["data"])
-    except Exception:
-        raise HTTPException(status_code=422, detail="Could not preview that file")
-    # Escaped by construction, and locked down anyway: no script, no network, no framing by other origins' pages.
-    return HTMLResponse(page, headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'", "X-Content-Type-Options": "nosniff"})
+    row = await _cv_store.get(cv_id)
+    if orig is None or row is None:
+        raise HTTPException(status_code=404, detail="No original file for this CV")
+    lang = normalize_lang(lang)
+    profile = await _cv_store.get_profile(cv_id)
+    title, description = _build_cv_share_meta(profile, lang)
+    if orig["kind"] == "pdf":
+        page = _pdf_original_page(cv_id, orig["name"] or "cv.pdf", t_chrome("ui.cv.download_original", lang))
+    else:
+        try:
+            page = await asyncio.to_thread(docx_to_html, orig["data"])
+        except Exception:
+            raise HTTPException(status_code=422, detail="Could not preview that file")
+    page = _inject_og_meta(page, title=title, description=description, url=f"{_PREVIEW_SITE}/cv/{cv_id}/original.html",
+                           image=f"{_PREVIEW_SITE}/cv/{cv_id}/original-preview.jpg")
+    # Escaped by construction (Word text) / fixed markup (PDF page), and locked down anyway: no script, no network;
+    # the PDF page may only frame our own origin.
+    return HTMLResponse(page, headers={
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+_PREVIEW_HEADERS = {"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"}
+
+
+@app.get("/cv/{cv_id}/preview.jpg")
+async def get_cv_preview(cv_id: str, template: Optional[str] = None):
+    """The 1200x630 image social networks show for a link to this CV (page 1 plus name and role)."""
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    chosen = template or row["template"]
+    if chosen not in CV_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Unknown template '{chosen}'. Must be one of {CV_TEMPLATES}.")
+    return Response(content=await _cv_preview_jpeg(cv_id, row, chosen), media_type="image/jpeg", headers=_PREVIEW_HEADERS)
+
+
+@app.get("/cv/{cv_id}/original-preview.jpg")
+async def get_cv_original_preview_image(cv_id: str):
+    """Same, for the uploaded original: its own first page when it's a PDF, otherwise the CV in its default template."""
+    row = await _cv_store.get(cv_id)
+    if row is None or not row.get("has_original"):
+        raise HTTPException(status_code=404, detail="No original file for this CV")
+    return Response(content=await _cv_preview_jpeg(cv_id, row, row["template"], original=True), media_type="image/jpeg", headers=_PREVIEW_HEADERS)
 
 
 @app.delete("/cv/{cv_id}/original", response_model=CVResponse)
@@ -511,7 +670,7 @@ async def remove_cv_original(cv_id: str, x_edit_token: str = Header("")):
     if not _cv_store.verify_edit_token(row, x_edit_token):
         raise HTTPException(status_code=403, detail="Invalid or missing edit token")
     await _cv_store.set_original(cv_id, None)
-    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")))
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")), expires_at=_expires_from_now())
 
 
 @app.get("/cv/{cv_id}.{extension}")
@@ -540,7 +699,8 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
         # preview card instead of a blank one.
         title, description = _build_cv_share_meta(profile, "en")
         canonical_url = f"https://tsech.online/audit/cv/{cv_id}.html?template={chosen_template}"
-        rendered = _inject_og_meta(rendered, title=title, description=description, url=canonical_url)
+        rendered = _inject_og_meta(rendered, title=title, description=description, url=canonical_url,
+                                   image=f"{_PREVIEW_SITE}/cv/{cv_id}/preview.jpg?template={chosen_template}")
     elif output_format == "pdf":
         try:
             rendered = render_cv_pdf(profile, chosen_template, photo_uri)
@@ -566,6 +726,7 @@ async def delete_cv(cv_id: str, x_edit_token: str = Header("")):
     if not _cv_store.verify_edit_token(row, x_edit_token):
         raise HTTPException(status_code=403, detail="Invalid or missing edit token")
     await _cv_store.delete(cv_id)
+    _drop_preview_files(cv_id)
     return {"deleted": True}
 
 
@@ -668,28 +829,107 @@ def _build_cv_share_meta(profile: CVProfile, lang: str) -> tuple[str, str]:
 _HEAD_OPEN_RE = re.compile(r"<head>", re.IGNORECASE)
 
 
-def _inject_og_meta(rendered_html: str, *, title: str, description: str, url: str) -> str:
-    """Splices og:/twitter: meta tags into an already-rendered HTML document's
-    <head> — used for the CV templates' own standalone documents (each is a
-    full page rendered by src/cv/render.py, not a Jinja template this service
-    controls directly), so a link to one of them also gets a real preview
-    card in Telegram/WhatsApp/Facebook instead of a blank one. Image is the
-    static tsech logo, matching /view/{id}'s existing pattern, rather than a
-    per-CV screenshot."""
+_LOGO = "https://tsech.online/logo.png"
+
+
+def _inject_og_meta(rendered_html: str, *, title: str, description: str, url: str, image: Optional[str] = None) -> str:
+    """Splices og:/twitter: meta tags into an already-rendered HTML document's <head>, so a link to it gets a
+    real preview card in Telegram, WhatsApp, LinkedIn, Facebook and X instead of a blank one. With `image`
+    (a 1200x630 JPEG of this CV, see src/cv/preview_card.py) it's the large "summary_large_image" card;
+    without, the static tsech logo as a small card."""
+    t, d, u = html.escape(title), html.escape(description), html.escape(url)
+    if image:
+        img = html.escape(image)
+        picture = (f'<meta property="og:image" content="{img}"><meta property="og:image:secure_url" content="{img}">'
+                   '<meta property="og:image:type" content="image/jpeg"><meta property="og:image:width" content="1200">'
+                   f'<meta property="og:image:height" content="630"><meta property="og:image:alt" content="{t}">'
+                   f'<meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="{img}">')
+    else:
+        picture = (f'<meta property="og:image" content="{_LOGO}"><meta name="twitter:card" content="summary">'
+                   f'<meta name="twitter:image" content="{_LOGO}">')
     tags = (
         '<meta property="og:type" content="website">'
         '<meta property="og:site_name" content="tsech">'
-        f'<meta property="og:title" content="{html.escape(title)}">'
-        f'<meta property="og:description" content="{html.escape(description)}">'
-        '<meta property="og:image" content="https://tsech.online/logo.png">'
-        f'<meta property="og:url" content="{html.escape(url)}">'
-        '<meta name="twitter:card" content="summary">'
-        f'<meta name="twitter:title" content="{html.escape(title)}">'
-        f'<meta name="twitter:description" content="{html.escape(description)}">'
-        '<meta name="twitter:image" content="https://tsech.online/logo.png">'
+        f'<meta property="og:title" content="{t}">'
+        f'<meta property="og:description" content="{d}">'
+        f'<meta property="og:url" content="{u}">'
+        f'<meta name="description" content="{d}">'
+        f'<meta name="twitter:title" content="{t}">'
+        f'<meta name="twitter:description" content="{d}">'
+        + picture
     )
     injected, count = _HEAD_OPEN_RE.subn(f"<head>{tags}", rendered_html, count=1)
     return injected if count else rendered_html
+
+
+# ---- link-preview images ---------------------------------------------------------------
+_bg_tasks: set = set()
+
+
+def _preview_key(row: dict, label: str) -> str:
+    return hashlib.sha1(f"{row.get('updated_at')}|{label}|{int(bool(row.get('has_photo')))}".encode()).hexdigest()[:10]
+
+
+async def _cv_preview_jpeg(cv_id: str, row: dict, template: str, original: bool = False) -> bytes:
+    """The 1200x630 share image for a CV (or, original=True, for its uploaded PDF's first page). Cached on
+    disk under a key that changes whenever the CV changes, so a stale preview is never served."""
+    label = "original" if original else template
+    path = _PREVIEW_DIR / f"{cv_id}.{label}.{_preview_key(row, label)}.jpg"
+    if path.exists():
+        return path.read_bytes()
+    lock = _preview_locks.setdefault(f"{cv_id}.{label}", asyncio.Lock())
+    try:
+        async with lock:
+            if path.exists():
+                return path.read_bytes()
+            try:
+                await asyncio.wait_for(_preview_gate.acquire(), timeout=15)
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=503, detail="Preview is busy - try again shortly")
+            try:
+                profile = CVProfile.model_validate(json.loads(row["profile_json"]))
+                png = None
+                if original:
+                    orig = await _cv_store.get_original(cv_id)
+                    if orig and orig["kind"] == "pdf":
+                        try:
+                            png = await asyncio.to_thread(rasterize_first_page, orig["data"])
+                        except RasterError:
+                            png = None  # an unrenderable upload still gets a card: our own render of the CV
+                if png is None:
+                    photo = await _cv_store.get_photo(cv_id) if row.get("has_photo") else None
+                    pdf = await asyncio.to_thread(render_cv_pdf, profile, template, to_data_uri(photo) if photo else None)
+                    png = await asyncio.to_thread(rasterize_first_page, pdf)
+                card = await asyncio.to_thread(compose_card, png, profile.name, profile.role or None)
+            except RasterError:
+                raise HTTPException(status_code=503, detail="Could not render a preview")
+            finally:
+                _preview_gate.release()
+            _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(card)
+            tmp.replace(path)
+            for old in _PREVIEW_DIR.glob(f"{cv_id}.{label}.*.jpg"):
+                if old != path:
+                    old.unlink(missing_ok=True)
+            return card
+    finally:
+        _preview_locks.pop(f"{cv_id}.{label}", None)
+
+
+def _prewarm_preview(cv_id: str) -> None:
+    """Renders the default template's preview in the background after a CV is created or changed, so the
+    first crawler that fetches a freshly shared link finds it ready instead of waiting on a render."""
+    async def run():
+        try:
+            row = await _cv_store.get(cv_id)
+            if row:
+                await _cv_preview_jpeg(cv_id, row, row["template"])
+        except Exception:
+            pass
+    task = asyncio.create_task(run())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 @app.get("/view/{job_id}", response_class=HTMLResponse)
@@ -831,6 +1071,7 @@ async def cv_builder_result(request: Request, cv_id: str, lang: str = "en"):
         {
             "lang": lang, "cv_id": cv_id, "cv_templates": template_labels,
             "original": {"name": row.get("original_name"), "kind": row.get("original_kind")} if row.get("has_original") else None,
+            "og_image": f"{_PREVIEW_SITE}/cv/{cv_id}/preview.jpg?template={row['template']}",
             "meta_title": meta_title, "meta_description": meta_description,
             "t": lambda key, **kw: t_chrome(key, lang, **kw),
         },

@@ -141,8 +141,10 @@ def test_the_word_preview_shows_the_text_and_is_locked_down(client):
     assert "default-src 'none'" in r.headers["content-security-policy"]
 
 
-def test_a_pdf_has_no_html_preview(client):
-    assert client.get(f"/cv/{_up(client, _cv_pdf())['id']}/original.html").status_code == 404
+def test_a_pdf_original_gets_a_shareable_page_around_the_viewer(client):
+    d = _up(client, _cv_pdf(), "My CV.pdf")
+    r = client.get(f"/cv/{d['id']}/original.html")
+    assert r.status_code == 200 and f'src="/audit/cv/{d["id"]}/original"' in r.text and "My CV.pdf" in r.text
 
 
 def test_document_text_is_escaped_never_passed_through_as_markup():
@@ -212,13 +214,13 @@ async def test_plain_reads_never_load_the_original_bytes(tmp_path):
 def test_the_share_page_has_a_copy_link_button_for_a_pdf_original(client):
     d = _up(client, _cv_pdf())
     page = client.get(f"/cv-builder/{d['id']}").text
-    assert f'data-path="/audit/cv/{d["id"]}/original"' in page and 'class="copylink"' in page
+    assert f'data-path="/audit/cv/{d["id"]}/original.html?lang=en"' in page and 'class="copylink"' in page
     assert f"/audit/cv/{d['id']}/original?download=1" in page  # the download link is still there beside it
 
 
 def test_a_word_originals_link_points_at_its_readable_preview(client):
     d = _up(client, _docx(_CV_LINES), "resume.docx")
-    assert f'data-path="/audit/cv/{d["id"]}/original.html"' in client.get(f"/cv-builder/{d['id']}").text
+    assert f'data-path="/audit/cv/{d["id"]}/original.html?lang=en"' in client.get(f"/cv-builder/{d['id']}").text
 
 
 def test_no_original_card_or_copy_button_without_an_original(client):

@@ -24,6 +24,7 @@ pydantic>=2.0.0
 python-dotenv>=1.1.1
 python-multipart>=0.0.9
 pypdf>=5.0  # text out of an uploaded PDF CV (src/cv/pdf_text.py)
+pypdfium2>=4.30  # renders page 1 of a CV PDF for its link-preview image (src/cv/raster_worker.py)
 
 # src.logger (used by every collector via src.utils)
 rich>=13.0.0

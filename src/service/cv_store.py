@@ -29,9 +29,14 @@ CREATE TABLE IF NOT EXISTS cv_profiles (
     photo BLOB,
     original BLOB,
     original_name TEXT,
-    original_kind TEXT
+    original_kind TEXT,
+    updated_at TEXT
 );
 """
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class CVStore:
@@ -51,9 +56,11 @@ class CVStore:
                 await db.execute("ALTER TABLE cv_profiles ADD COLUMN edit_token TEXT")
             if "photo" not in cols:
                 await db.execute("ALTER TABLE cv_profiles ADD COLUMN photo BLOB")
-            for col, typ in (("original", "BLOB"), ("original_name", "TEXT"), ("original_kind", "TEXT")):
+            for col, typ in (("original", "BLOB"), ("original_name", "TEXT"), ("original_kind", "TEXT"), ("updated_at", "TEXT")):
                 if col not in cols:
                     await db.execute(f"ALTER TABLE cv_profiles ADD COLUMN {col} {typ}")
+            # "Last changed" is what retention counts from; rows from before it existed start at their creation time.
+            await db.execute("UPDATE cv_profiles SET updated_at = created_at WHERE updated_at IS NULL")
             await db.commit()
 
     async def create(self, profile: CVProfile, template: str) -> tuple:
@@ -67,8 +74,8 @@ class CVStore:
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT INTO cv_profiles (id, profile_json, template, created_at, edit_token) VALUES (?, ?, ?, ?, ?)",
-                (cv_id, profile.model_dump_json(), template, now, edit_token),
+                "INSERT INTO cv_profiles (id, profile_json, template, created_at, edit_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (cv_id, profile.model_dump_json(), template, now, edit_token, now),
             )
             await db.commit()
         return cv_id, edit_token
@@ -88,7 +95,7 @@ class CVStore:
             # Not SELECT *: every render/GET goes through here, and none of them want the photo's
             # bytes. has_photo says whether there is one; get_photo() fetches it when needed.
             async with db.execute(
-                "SELECT id, profile_json, template, created_at, edit_token, (photo IS NOT NULL) AS has_photo, "
+                "SELECT id, profile_json, template, created_at, updated_at, edit_token, (photo IS NOT NULL) AS has_photo, "
                 "(original IS NOT NULL) AS has_original, original_name, original_kind "
                 "FROM cv_profiles WHERE id = ?", (cv_id,),
             ) as cursor:
@@ -108,9 +115,22 @@ class CVStore:
     async def set_photo(self, cv_id: str, jpeg: Optional[bytes]) -> bool:
         """Replaces the CV's photo (None removes it). Template, profile and token are untouched."""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("UPDATE cv_profiles SET photo = ? WHERE id = ?", (jpeg, cv_id))
+            cursor = await db.execute("UPDATE cv_profiles SET photo = ?, updated_at = ? WHERE id = ?", (jpeg, _now(), cv_id))
             await db.commit()
             return cursor.rowcount > 0
+
+    async def purge_expired(self, cutoff_iso: str) -> list:
+        """Deletes every CV not changed since cutoff (profile, photo and original go with the row) and
+        returns their ids so callers can remove anything derived from them. Viewing doesn't count as a
+        change: a share link that is only ever opened still expires."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT id FROM cv_profiles WHERE updated_at < ?", (cutoff_iso,)) as cursor:
+                ids = [r[0] async for r in cursor]
+            if ids:
+                await db.execute("DELETE FROM cv_profiles WHERE updated_at < ?", (cutoff_iso,))
+                await db.commit()
+                await db.execute("VACUUM")  # hand the freed photo/original pages back to the disk
+        return ids
 
     async def delete(self, cv_id: str) -> bool:
         """Removes the whole CV: profile, photo and the uploaded original go with the row."""
@@ -130,8 +150,8 @@ class CVStore:
         """Keeps (or, with None, removes) the uploaded original next to the CV built from it."""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "UPDATE cv_profiles SET original = ?, original_name = ?, original_kind = ? WHERE id = ?",
-                (data, name if data else None, kind if data else None, cv_id),
+                "UPDATE cv_profiles SET original = ?, original_name = ?, original_kind = ?, updated_at = ? WHERE id = ?",
+                (data, name if data else None, kind if data else None, _now(), cv_id),
             )
             await db.commit()
             return cursor.rowcount > 0
@@ -142,8 +162,8 @@ class CVStore:
         which revises a profile without minting a new id/link."""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "UPDATE cv_profiles SET profile_json = ? WHERE id = ?",
-                (profile.model_dump_json(), cv_id),
+                "UPDATE cv_profiles SET profile_json = ?, updated_at = ? WHERE id = ?",
+                (profile.model_dump_json(), _now(), cv_id),
             )
             await db.commit()
             return cursor.rowcount > 0
