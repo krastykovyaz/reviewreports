@@ -131,3 +131,36 @@ def test_modern_sidebar_skills_are_one_flowing_line_not_a_bullet_per_skill():
 def test_a_job_date_never_wraps_onto_two_lines(template):
     # The title shrinks and wraps instead; the date keeps its width.
     assert "white-space: nowrap" in render_cv_html(_long_profile(), template)
+
+
+# ── a CV longer than one page: nothing is cut off ──
+
+def _very_long_profile():
+    p = _long_profile().model_dump()
+    p["education"] = [{"degree": f"Degree {i}", "institution": f"INSTITUTION-{i}", "year": "2000"} for i in range(14)]
+    p["languages"] = ["English (fluent)", "Russian (native)"]
+    return CVProfile.model_validate(p)
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_the_on_screen_card_grows_instead_of_clipping(template):
+    import re
+    html = render_cv_html(_very_long_profile(), template)
+    rule = re.search(r"\.doc \{[^}]*\}", html).group(0)
+    assert "overflow: hidden" not in rule and "overflow:hidden" not in rule
+    assert "min-height: 569px" in html or template != "modern"
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_very_long_cv_keeps_every_entry_in_the_pdf(template):
+    from io import BytesIO
+    from pypdf import PdfReader
+    pages = PdfReader(BytesIO(render_cv_pdf(_very_long_profile(), template))).pages
+    text = "\n".join(p.extract_text() for p in pages)
+    assert len(pages) >= 2 and all(f"INSTITUTION-{i}" in text for i in range(14))
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_languages_are_rendered_by_every_template(template):
+    # Classic and Compact used to drop the field silently.
+    assert "Russian (native)" in render_cv_html(_long_profile(), template)

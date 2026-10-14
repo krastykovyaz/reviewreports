@@ -8,7 +8,9 @@
      default, so @media print below applies there automatically — the same
      rendered HTML also works as an on-screen preview via @media screen,
      with no separate "print mode" needed. */
-  @page { size: letter; margin: 0; }
+  /* First page edge to edge; pages after it (a long CV) get a top/bottom margin so text isn't flush with the paper's edge. */
+  @page { size: letter; margin: 0.5in 0; }
+  @page :first { margin: 0; }
   :root { --accent: #2563eb; --ink: #1a1d23; --muted: #5b6270; }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); }
@@ -18,23 +20,14 @@
   @media screen { .page { border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06); } }
   @media print { .page { width: 8.5in; margin: 0; } }
 
-  /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
-     scrollable — the layout below was validated to fit within this frame
-     for a full one-page sample profile; unusually long content (many jobs,
-     long bullets) can still clip, since fit depends on content length. */
-  .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
-  /* WeasyPrint silently ignores aspect-ratio entirely (confirmed via its
-     own warning output), so print mode needs an explicit height instead.
-     Also confirmed: even with this height set, overflow:hidden does NOT
-     stop WeasyPrint from paginating content that does not fit — a
-     too-long profile spills onto additional PDF pages rather than being
-     clipped there. That is only true for the PDF path; the on-screen
-     preview (a real browser, no pagination) does clip at one page as
-     described above. Prefer the safer PDF behavior (visible overflow) over
-     trying to force a hard clip that would silently lose real content. */
-  @media print { .doc { height: 11in; font-size: 22.3px; } }
+  /* A US-Letter-proportioned card that GROWS with its content. A short CV is exactly one page
+     (aspect-ratio is the floor); a longer one makes the card taller instead of cutting its end
+     off - nothing is clipped on screen. In the PDF, WeasyPrint ignores aspect-ratio, so print
+     asks for min-height 11in instead; content beyond that flows onto further pages. */
+  .doc { width: 100%; aspect-ratio: 8.5 / 11; font-size: 12px; }
+  @media print { .doc { min-height: 11in; font-size: 22.3px; } }
 
-  .modern { display: flex; width: 440px; height: 569px; }
+  .modern { display: flex; width: 440px; min-height: 569px; }
   /* Print output uses literal scaled values below (×1.8545, matching 8.5in's
      816px vs. the 440px this layout was screen-validated at) rather than a
      CSS transform:scale on .modern — WeasyPrint was found to truncate a
@@ -43,7 +36,14 @@
      non-flex content, which scales via transform correctly; this is
      specific to multi-column layout mechanisms). Literal values sidestep
      that bug entirely rather than working around it. */
-  @media print { .modern { width: 8.5in; height: 11in; } }
+  /* Print: a table, not flex. WeasyPrint can't fragment a flex container across pages (the whole
+     main column jumped to page 2 for a long CV); table cells flow page to page and the sidebar's
+     background follows. */
+  @media print {
+    .modern { display: table; table-layout: fixed; width: 8.5in; min-height: 11in; }
+    .modern .side, .modern .main { display: table-cell; vertical-align: top; }
+    .modern .side { width: 36%; }
+  }
   .modern .side { width: 36%; background: #1e2330; color: #d7dbe6; padding: 18px 14px; }
   .modern .side .name { color: #fff; font-size: 17px; font-weight: 700; line-height: 1.25; }
   .modern .side .photo { display: block; width: 76px; height: 76px; border-radius: 50%; object-fit: cover; margin: 0 0 12px; border: 2px solid #3a4258; }
