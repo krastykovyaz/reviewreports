@@ -555,6 +555,20 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
     return PlainTextResponse(content=rendered, media_type=media_type)
 
 
+@app.delete("/cv/{cv_id}")
+async def delete_cv(cv_id: str, x_edit_token: str = Header("")):
+    """Deletes the CV for good: its profile, profile photo and the uploaded original file, so its share
+    link and every rendered/original URL stop working. Needs the edit token (the id alone is a public
+    share link); the token travels in a header, not the URL."""
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    if not _cv_store.verify_edit_token(row, x_edit_token):
+        raise HTTPException(status_code=403, detail="Invalid or missing edit token")
+    await _cv_store.delete(cv_id)
+    return {"deleted": True}
+
+
 @app.get("/cv/{cv_id}", response_model=CVResponse)
 async def get_cv(cv_id: str):
     row = await _cv_store.get(cv_id)

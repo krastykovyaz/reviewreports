@@ -112,6 +112,13 @@ class CVStore:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def delete(self, cv_id: str) -> bool:
+        """Removes the whole CV: profile, photo and the uploaded original go with the row."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM cv_profiles WHERE id = ?", (cv_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def get_original(self, cv_id: str) -> Optional[Dict[str, Any]]:
         """The file this CV was built from (bytes, name, kind 'pdf'|'docx'), if one was uploaded."""
         async with aiosqlite.connect(self.db_path) as db:

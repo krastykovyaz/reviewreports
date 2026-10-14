@@ -225,3 +225,56 @@ def test_no_original_card_or_copy_button_without_an_original(client):
     d = client.post("/cv/from-text", json={"text": "Jordan Reyes, engineer, jordan@example.com"}).json()
     page = client.get(f"/cv-builder/{d['id']}").text
     assert 'class="copylink"' not in page and "/original" not in page.split("<script>")[0]
+
+
+# ── deleting the whole CV removes its original and photo too ──
+
+def test_deleting_a_cv_removes_everything_stored_for_it(client):
+    from tests.test_cv_photo import _jpeg
+    d = _up(client, _cv_pdf()); i = d["id"]
+    client.post(f"/cv/{i}/photo", files={"file": ("p.jpg", _jpeg(), "image/jpeg")}, data={"edit_token": d["edit_token"]})
+    assert client.get(f"/cv/{i}/original").status_code == 200
+    r = client.delete(f"/cv/{i}", headers={"X-Edit-Token": d["edit_token"]})
+    assert r.status_code == 200 and r.json() == {"deleted": True}
+    for url in (f"/cv/{i}", f"/cv/{i}/original", f"/cv/{i}/original.html", f"/cv/{i}.html", f"/cv/{i}.pdf", f"/cv/{i}.md", f"/cv-builder/{i}"):
+        assert client.get(url).status_code == 404, url
+    import asyncio
+    store = app_module._cv_store
+    loop = asyncio.new_event_loop()
+    assert loop.run_until_complete(store.get_original(i)) is None and loop.run_until_complete(store.get_photo(i)) is None
+
+
+def test_deleting_needs_the_edit_token(client):
+    d = _up(client, _cv_pdf())
+    assert client.delete(f"/cv/{d['id']}").status_code == 403
+    assert client.delete(f"/cv/{d['id']}", headers={"X-Edit-Token": "wrong"}).status_code == 403
+    assert client.get(f"/cv/{d['id']}/original").status_code == 200  # nothing was touched
+
+
+def test_another_cvs_token_cannot_delete_it(client):
+    a, b = _up(client, _cv_pdf()), _up(client, _cv_pdf())
+    assert client.delete(f"/cv/{b['id']}", headers={"X-Edit-Token": a["edit_token"]}).status_code == 403
+    assert client.get(f"/cv/{b['id']}").status_code == 200
+
+
+def test_deleting_one_cv_leaves_the_others_alone(client):
+    a, b = _up(client, _cv_pdf()), _up(client, _docx(_CV_LINES), "r.docx")
+    client.delete(f"/cv/{a['id']}", headers={"X-Edit-Token": a["edit_token"]})
+    assert client.get(f"/cv/{b['id']}").status_code == 200 and client.get(f"/cv/{b['id']}/original").status_code == 200
+
+
+def test_deleting_twice_or_an_unknown_cv_is_404(client):
+    d = _up(client, _cv_pdf())
+    assert client.delete(f"/cv/{d['id']}", headers={"X-Edit-Token": d["edit_token"]}).status_code == 200
+    assert client.delete(f"/cv/{d['id']}", headers={"X-Edit-Token": d["edit_token"]}).status_code == 404
+    assert client.delete("/cv/nope").status_code == 404
+
+
+def test_a_cv_with_no_stored_token_can_never_be_deleted_by_anyone(client):
+    d = client.post("/cv/from-text", json={"text": "Jordan Reyes, engineer, jordan@example.com"}).json()
+    import asyncio, aiosqlite
+    async def strip():
+        async with aiosqlite.connect(app_module._cv_store.db_path) as db:
+            await db.execute("UPDATE cv_profiles SET edit_token = NULL WHERE id = ?", (d["id"],)); await db.commit()
+    asyncio.new_event_loop().run_until_complete(strip())
+    assert client.delete(f"/cv/{d['id']}", headers={"X-Edit-Token": ""}).status_code == 403
