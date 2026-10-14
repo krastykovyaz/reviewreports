@@ -46,6 +46,7 @@
   @media print { .modern { width: 8.5in; height: 11in; } }
   .modern .side { width: 36%; background: #1e2330; color: #d7dbe6; padding: 18px 14px; }
   .modern .side .name { color: #fff; font-size: 17px; font-weight: 700; line-height: 1.25; }
+  .modern .side .photo { display: block; width: 76px; height: 76px; border-radius: 50%; object-fit: cover; margin: 0 0 12px; border: 2px solid #3a4258; }
   .modern .side .role { color: #8fb3ff; font-size: 11px; margin: 4px 0 15px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
   .modern .side h4 { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #7b8296; margin: 13px 0 5px; }
   .modern .side p, .modern .side li { font-size: 11px; line-height: 1.45; margin: 0 0 3px; color: #c3c8d6; }
@@ -61,6 +62,7 @@
 
   @media print {
     .modern .side { padding: 33.4px 26px; }
+    .modern .side .photo { width: 141px; height: 141px; margin-bottom: 22.3px; border-width: 3.7px; }
     .modern .side .name { font-size: 31.5px; }
     .modern .side .role { font-size: 20.4px; margin: 7.4px 0 27.8px; }
     .modern .side h4 { font-size: 18.5px; margin: 24.1px 0 9.3px; }
@@ -82,6 +84,7 @@
 <div class="doc">
   <div class="modern">
     <div class="side">
+      {% if photo %}<img class="photo" src="{{ photo }}" alt="">{% endif %}
       <div class="name">{{ profile.name }}</div>
       {% if profile.role %}<div class="role">{{ profile.role }}</div>{% endif %}
 

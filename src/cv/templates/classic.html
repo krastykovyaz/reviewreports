@@ -42,6 +42,8 @@
      that whole bug class rather than relying on transform working here. */
   @media print { .classic { width: 8.5in; padding: 37.1px 51.9px; } }
   .classic .head { text-align: center; border-bottom: 2px solid #222; padding-bottom: 8px; margin-bottom: 10px; }
+  .classic .head.has-photo { position: relative; padding-left: 64px; padding-right: 64px; min-height: 60px; }
+  .classic .head .photo { position: absolute; right: 0; top: 0; width: 52px; height: 52px; border-radius: 50%; object-fit: cover; }
   .classic .head .name { font-size: 18px; font-weight: 700; letter-spacing: .02em; }
   .classic .head .contact { font-size: 10.5px; color: #444; margin-top: 5px; font-family: Arial, sans-serif; }
   .classic h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid #999; padding-bottom: 3px; margin: 10px 0 6px; font-family: Arial, sans-serif; font-weight: 700; }
@@ -53,6 +55,8 @@
 
   @media print {
     .classic .head { border-bottom-width: 3.7px; padding-bottom: 14.8px; margin-bottom: 18.5px; }
+    .classic .head.has-photo { padding-left: 119px; padding-right: 119px; min-height: 111px; }
+    .classic .head .photo { width: 96px; height: 96px; }
     .classic .head .name { font-size: 33.4px; }
     .classic .head .contact { font-size: 19.5px; margin-top: 9.3px; }
     .classic h4 { font-size: 22.3px; border-bottom-width: 1.9px; padding-bottom: 5.6px; margin: 18.5px 0 11.1px; }
@@ -68,7 +72,8 @@
 <div class="page">
 <div class="doc">
   <div class="classic">
-    <div class="head">
+    <div class="head{% if photo %} has-photo{% endif %}">
+      {% if photo %}<img class="photo" src="{{ photo }}" alt="">{% endif %}
       <div class="name">{{ profile.name }}</div>
       <div class="contact">
         {{ profile.contact.email }}

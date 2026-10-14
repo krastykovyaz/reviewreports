@@ -31,12 +31,13 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from src.cv.extract import edit_cv_profile, extract_cv_profile
+from src.cv.photo import MAX_UPLOAD_BYTES as CV_PHOTO_MAX_BYTES, process_cv_photo, to_data_uri
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
 from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.i18n import SUPPORTED_LANGUAGES, normalize_lang, t_chrome
@@ -260,6 +261,7 @@ class CVResponse(BaseModel):
     id: str
     template: str
     profile: dict
+    has_photo: bool = False  # the photo itself is never returned here - it's merged in at render time
 
 
 class CVCreateResponse(CVResponse):
@@ -353,7 +355,40 @@ async def edit_cv(cv_id: str, request: EditCVRequest):
         raise HTTPException(status_code=422, detail="Could not apply that change")
 
     await _cv_store.update_profile(cv_id, revised)
-    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump())
+    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump(), has_photo=bool(row.get("has_photo")))
+
+
+@app.post("/cv/{cv_id}/photo", response_model=CVResponse)
+async def set_cv_photo(cv_id: str, file: UploadFile = File(...), edit_token: str = Form(...)):
+    """Sets (or replaces) the CV's profile photo. Same credential as editing the CV: a
+    CV's id is also its public share link, so the id alone must not be enough to put
+    someone's picture on it. The upload is decoded and re-encoded - see src/cv/photo.py."""
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    if not _cv_store.verify_edit_token(row, edit_token):
+        raise HTTPException(status_code=403, detail="Invalid or missing edit token")
+    raw = await file.read(CV_PHOTO_MAX_BYTES + 1)
+    if len(raw) > CV_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail={"code": "photo_too_large"})
+    try:
+        jpeg = await asyncio.to_thread(process_cv_photo, raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail={"code": "bad_image"})
+    await _cv_store.set_photo(cv_id, jpeg)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=True)
+
+
+@app.delete("/cv/{cv_id}/photo", response_model=CVResponse)
+async def remove_cv_photo(cv_id: str, x_edit_token: str = Header("")):
+    """Removes the photo. The token travels in a header, not the URL: URLs end up in access logs."""
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    if not _cv_store.verify_edit_token(row, x_edit_token):
+        raise HTTPException(status_code=403, detail="Invalid or missing edit token")
+    await _cv_store.set_photo(cv_id, None)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=False)
 
 
 @app.get("/cv/{cv_id}.{extension}")
@@ -369,12 +404,14 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
         raise HTTPException(status_code=404, detail="CV not found")
 
     profile = await _cv_store.get_profile(cv_id)
+    photo_bytes = await _cv_store.get_photo(cv_id) if row.get("has_photo") and output_format != "markdown" else None
+    photo_uri = to_data_uri(photo_bytes) if photo_bytes else None
     chosen_template = template or row["template"]
     if output_format != "markdown" and chosen_template not in CV_TEMPLATES:
         raise HTTPException(status_code=400, detail=f"Unknown template '{chosen_template}'. Must be one of {CV_TEMPLATES}.")
 
     if output_format == "html":
-        rendered = render_cv_html(profile, chosen_template)
+        rendered = render_cv_html(profile, chosen_template, photo_uri)
         # Also give a direct link to one of these documents (people share
         # them as-is, not just the /cv-builder/{id} comparison page) a real
         # preview card instead of a blank one.
@@ -383,7 +420,7 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
         rendered = _inject_og_meta(rendered, title=title, description=description, url=canonical_url)
     elif output_format == "pdf":
         try:
-            rendered = render_cv_pdf(profile, chosen_template)
+            rendered = render_cv_pdf(profile, chosen_template, photo_uri)
         except ImportError as exc:
             raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
     else:
@@ -400,7 +437,7 @@ async def get_cv(cv_id: str):
     row = await _cv_store.get(cv_id)
     if row is None:
         raise HTTPException(status_code=404, detail="CV not found")
-    return CVResponse(id=row["id"], template=row["template"], profile=json.loads(row["profile_json"]))
+    return CVResponse(id=row["id"], template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")))
 
 
 # ---- B2C web flow --------------------------------------------------------------

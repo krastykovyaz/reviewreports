@@ -26,10 +26,11 @@ that fits within the validated density.
 """
 
 import os
-from typing import Tuple
+from typing import Optional, Tuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from src.cv.photo import DATA_URI_PREFIX
 from src.cv.schema import CVProfile
 
 TEMPLATES: Tuple[str, ...] = ("modern", "classic", "compact")
@@ -39,13 +40,17 @@ _TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 _env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR), autoescape=select_autoescape(["html"]))
 
 
-def render_cv_html(profile: CVProfile, template: str) -> str:
+def render_cv_html(profile: CVProfile, template: str, photo: Optional[str] = None) -> str:
+    """photo: a data URI produced by src.cv.photo.to_data_uri (anything else is ignored, so
+    a caller can never smuggle an arbitrary URL or markup into the page through it)."""
     if template not in TEMPLATES:
         raise ValueError(f"Unknown template '{template}'. Must be one of {TEMPLATES}.")
-    return _env.get_template(f"{template}.html").render(profile=profile)
+    if photo is not None and not photo.startswith(DATA_URI_PREFIX):
+        photo = None
+    return _env.get_template(f"{template}.html").render(profile=profile, photo=photo)
 
 
-def render_cv_pdf(profile: CVProfile, template: str) -> bytes:
+def render_cv_pdf(profile: CVProfile, template: str, photo: Optional[str] = None) -> bytes:
     """Render to PDF bytes by feeding the same HTML used for the on-screen
     preview through WeasyPrint, rather than maintaining a separate PDF
     template — mirrors src/report/render/pdf.py's approach.
@@ -56,7 +61,7 @@ def render_cv_pdf(profile: CVProfile, template: str) -> bytes:
     """
     from weasyprint import HTML
 
-    html = render_cv_html(profile, template)
+    html = render_cv_html(profile, template, photo)
     return HTML(string=html).write_pdf()
 
 

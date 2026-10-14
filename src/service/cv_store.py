@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS cv_profiles (
     profile_json TEXT NOT NULL,
     template TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    edit_token TEXT
+    edit_token TEXT,
+    photo BLOB
 );
 """
 
@@ -45,6 +46,8 @@ class CVStore:
             cols = {row[1] async for row in await db.execute("PRAGMA table_info(cv_profiles)")}
             if "edit_token" not in cols:
                 await db.execute("ALTER TABLE cv_profiles ADD COLUMN edit_token TEXT")
+            if "photo" not in cols:
+                await db.execute("ALTER TABLE cv_profiles ADD COLUMN photo BLOB")
             await db.commit()
 
     async def create(self, profile: CVProfile, template: str) -> tuple:
@@ -76,13 +79,31 @@ class CVStore:
     async def get(self, cv_id: str) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM cv_profiles WHERE id = ?", (cv_id,)) as cursor:
+            # Not SELECT *: every render/GET goes through here, and none of them want the photo's
+            # bytes. has_photo says whether there is one; get_photo() fetches it when needed.
+            async with db.execute(
+                "SELECT id, profile_json, template, created_at, edit_token, (photo IS NOT NULL) AS has_photo "
+                "FROM cv_profiles WHERE id = ?", (cv_id,),
+            ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
     async def get_profile(self, cv_id: str) -> Optional[CVProfile]:
         row = await self.get(cv_id)
         return CVProfile.model_validate(json.loads(row["profile_json"])) if row else None
+
+    async def get_photo(self, cv_id: str) -> Optional[bytes]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT photo FROM cv_profiles WHERE id = ?", (cv_id,)) as cursor:
+                row = await cursor.fetchone()
+                return bytes(row[0]) if row and row[0] else None
+
+    async def set_photo(self, cv_id: str, jpeg: Optional[bytes]) -> bool:
+        """Replaces the CV's photo (None removes it). Template, profile and token are untouched."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("UPDATE cv_profiles SET photo = ? WHERE id = ?", (jpeg, cv_id))
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def update_profile(self, cv_id: str, profile: CVProfile) -> bool:
         """Overwrites an existing CV's profile in place (its template and

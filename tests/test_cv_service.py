@@ -102,7 +102,7 @@ def test_get_rendered_pdf(client, monkeypatch):
     # Mocks the renderer itself (rather than requiring weasyprint's system
     # libs in every test environment), mirroring test_service_app.py's
     # test_get_rendered_pdf for the report endpoint.
-    monkeypatch.setattr(app_module, "render_cv_pdf", lambda profile, template: b"%PDF-1.7 fake cv pdf")
+    monkeypatch.setattr(app_module, "render_cv_pdf", lambda profile, template, photo=None: b"%PDF-1.7 fake cv pdf")
     cv_id = client.post("/cv", json=_SAMPLE_PAYLOAD).json()["id"]
     resp = client.get(f"/cv/{cv_id}.pdf")
     assert resp.status_code == 200
@@ -111,7 +111,7 @@ def test_get_rendered_pdf(client, monkeypatch):
 
 
 def test_get_rendered_pdf_unavailable_is_503(client, monkeypatch):
-    def raise_import_error(profile, template):
+    def raise_import_error(profile, template, photo=None):
         raise ImportError("cannot load library 'libgobject-2.0-0'")
 
     monkeypatch.setattr(app_module, "render_cv_pdf", raise_import_error)

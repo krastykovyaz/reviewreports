@@ -43,6 +43,8 @@
      transform working here. */
   @media print { .compact { width: 8.5in; padding: 33.4px 40.8px; font-size: 19.5px; } }
   .compact .head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid var(--ink); padding-bottom: 8px; margin-bottom: 10px; }
+  .compact .head .who { display: flex; align-items: center; gap: 10px; }
+  .compact .head .photo { flex: none; width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }
   .compact .head .name { font-size: 15px; font-weight: 700; font-family: -apple-system, sans-serif; }
   .compact .head .contact { font-size: 9.5px; color: var(--muted); text-align: right; line-height: 1.5; }
   .compact h4 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); margin: 12px 0 5px; font-family: -apple-system, sans-serif; font-weight: 700; }
@@ -57,6 +59,8 @@
 
   @media print {
     .compact .head { border-bottom-width: 2.8px; padding-bottom: 14.8px; margin-bottom: 18.5px; }
+    .compact .head .who { gap: 18.5px; }
+    .compact .head .photo { width: 82px; height: 82px; }
     .compact .head .name { font-size: 27.8px; }
     .compact .head .contact { font-size: 17.6px; }
     .compact h4 { font-size: 17.6px; margin: 22.3px 0 9.3px; }
@@ -74,7 +78,8 @@
 <div class="doc">
   <div class="compact">
     <div class="head">
-      <div class="name">{{ profile.name }}</div>
+      {% if photo %}<div class="who"><img class="photo" src="{{ photo }}" alt=""><div class="name">{{ profile.name }}</div></div>
+      {% else %}<div class="name">{{ profile.name }}</div>{% endif %}
       <div class="contact">
         {{ profile.contact.email }}<br>
         {%- if profile.contact.phone %}{{ profile.contact.phone }}{% endif -%}
