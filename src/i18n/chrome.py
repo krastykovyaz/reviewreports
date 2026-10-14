@@ -143,6 +143,9 @@ _CHROME = {
     "ui.cv.template.modern": {"en": "Modern", "ru": "Модерн", "fr": "Moderne"},
     "ui.cv.template.classic": {"en": "Classic", "ru": "Классический", "fr": "Classique"},
     "ui.cv.template.compact": {"en": "Compact", "ru": "Компактный", "fr": "Compact"},
+    "ui.cv.original": {"en": "Original", "ru": "Оригинал", "fr": "Original"},
+    "ui.cv.download_original": {"en": "Download original", "ru": "Скачать оригинал", "fr": "Télécharger l'original"},
+    "ui.cv.original_note": {"en": "The file you uploaded, as it is", "ru": "Загруженный тобой файл, как есть", "fr": "Le fichier que vous avez envoyé, tel quel"},
 
     "ui.cv.mode_manual": {"en": "Fill in manually", "ru": "Заполнить вручную", "fr": "Remplir manuellement"},
     "ui.cv.mode_paste": {"en": "Paste your info instead", "ru": "Или вставьте информацию о себе", "fr": "Ou collez vos informations"},

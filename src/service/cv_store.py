@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS cv_profiles (
     template TEXT NOT NULL,
     created_at TEXT NOT NULL,
     edit_token TEXT,
-    photo BLOB
+    photo BLOB,
+    original BLOB,
+    original_name TEXT,
+    original_kind TEXT
 );
 """
 
@@ -48,6 +51,9 @@ class CVStore:
                 await db.execute("ALTER TABLE cv_profiles ADD COLUMN edit_token TEXT")
             if "photo" not in cols:
                 await db.execute("ALTER TABLE cv_profiles ADD COLUMN photo BLOB")
+            for col, typ in (("original", "BLOB"), ("original_name", "TEXT"), ("original_kind", "TEXT")):
+                if col not in cols:
+                    await db.execute(f"ALTER TABLE cv_profiles ADD COLUMN {col} {typ}")
             await db.commit()
 
     async def create(self, profile: CVProfile, template: str) -> tuple:
@@ -82,7 +88,8 @@ class CVStore:
             # Not SELECT *: every render/GET goes through here, and none of them want the photo's
             # bytes. has_photo says whether there is one; get_photo() fetches it when needed.
             async with db.execute(
-                "SELECT id, profile_json, template, created_at, edit_token, (photo IS NOT NULL) AS has_photo "
+                "SELECT id, profile_json, template, created_at, edit_token, (photo IS NOT NULL) AS has_photo, "
+                "(original IS NOT NULL) AS has_original, original_name, original_kind "
                 "FROM cv_profiles WHERE id = ?", (cv_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -102,6 +109,23 @@ class CVStore:
         """Replaces the CV's photo (None removes it). Template, profile and token are untouched."""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("UPDATE cv_profiles SET photo = ? WHERE id = ?", (jpeg, cv_id))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_original(self, cv_id: str) -> Optional[Dict[str, Any]]:
+        """The file this CV was built from (bytes, name, kind 'pdf'|'docx'), if one was uploaded."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT original, original_name, original_kind FROM cv_profiles WHERE id = ?", (cv_id,)) as cursor:
+                row = await cursor.fetchone()
+                return {"data": bytes(row[0]), "name": row[1], "kind": row[2]} if row and row[0] else None
+
+    async def set_original(self, cv_id: str, data: Optional[bytes], name: Optional[str] = None, kind: Optional[str] = None) -> bool:
+        """Keeps (or, with None, removes) the uploaded original next to the CV built from it."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE cv_profiles SET original = ?, original_name = ?, original_kind = ? WHERE id = ?",
+                (data, name if data else None, kind if data else None, cv_id),
+            )
             await db.commit()
             return cursor.rowcount > 0
 

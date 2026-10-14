@@ -27,7 +27,9 @@ import html
 import json
 import os
 import re
+import unicodedata
 import uuid
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -38,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from src.cv.extract import edit_cv_profile, extract_cv_profile
 from src.cv.doc_text import DocError, extract_document_text
+from src.cv.docx_preview import docx_to_html
 from src.cv.pdf_text import MAX_CHARS as CV_TEXT_MAX_CHARS, MAX_UPLOAD_BYTES as CV_PDF_MAX_BYTES
 from src.cv.photo import MAX_UPLOAD_BYTES as CV_PHOTO_MAX_BYTES, process_cv_photo, to_data_uri
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
@@ -261,11 +264,28 @@ class CreateCVRequest(CVProfile):
     template: str = "modern"
 
 
+def _orig(row: dict) -> dict:
+    return {"has_original": bool(row.get("has_original")), "original_name": row.get("original_name"), "original_kind": row.get("original_kind")}
+
+
+def _safe_filename(name: Optional[str], kind: str) -> str:
+    """A display/download name for an uploaded file: no path, no control or odd characters, right extension."""
+    base = os.path.basename((name or "").replace("\\", "/"))
+    base = re.sub(r"\.(pdf|docx)$", "", base, flags=re.I)
+    base = "".join(c for c in unicodedata.normalize("NFC", base) if c.isprintable() and c not in '<>:"|?*\\/')
+    return (base.strip(" .")[:80] or "cv") + f".{kind}"
+
+
 class CVResponse(BaseModel):
     id: str
     template: str
     profile: dict
     has_photo: bool = False  # the photo itself is never returned here - it's merged in at render time
+    # The file this CV was built from (PDF/Word), when one was uploaded: only its existence/name/kind here,
+    # the bytes are served by GET /cv/{id}/original.
+    has_original: bool = False
+    original_name: Optional[str] = None
+    original_kind: Optional[str] = None
 
 
 class CVCreateResponse(CVResponse):
@@ -321,7 +341,7 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
     return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token)
 
 
-class CVCreateFromFileResponse(CVCreateResponse):
+class CVCreateFromFileResponse(CVCreateResponse):  # also carries has_original/original_name/original_kind
     source_text: str  # what was read from the file (plus any typed notes), so a client can show it as the CV's source
 
 
@@ -370,7 +390,12 @@ async def create_cv_from_file(
         raise HTTPException(status_code=422, detail={"code": "doc_no_cv"})
 
     cv_id, edit_token = await _cv_store.create(profile, template)
-    return CVCreateFromFileResponse(id=cv_id, template=template, profile=profile.model_dump(), edit_token=edit_token, source_text=text)
+    # Kept with the CV so it can be shown next to our templates (and removed by whoever holds the edit token).
+    kind = "pdf" if b"%PDF-" in raw[:1024] else "docx"
+    orig_name = _safe_filename(file.filename, kind)
+    await _cv_store.set_original(cv_id, raw, orig_name, kind)
+    return CVCreateFromFileResponse(id=cv_id, template=template, profile=profile.model_dump(), edit_token=edit_token, source_text=text,
+                                    has_original=True, original_name=orig_name, original_kind=kind)
 
 
 class EditCVRequest(BaseModel):
@@ -411,7 +436,7 @@ async def edit_cv(cv_id: str, request: EditCVRequest):
         raise HTTPException(status_code=422, detail="Could not apply that change")
 
     await _cv_store.update_profile(cv_id, revised)
-    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump(), has_photo=bool(row.get("has_photo")))
+    return CVResponse(id=cv_id, template=row["template"], profile=revised.model_dump(), has_photo=bool(row.get("has_photo")), **_orig(row))
 
 
 @app.post("/cv/{cv_id}/photo", response_model=CVResponse)
@@ -432,7 +457,7 @@ async def set_cv_photo(cv_id: str, file: UploadFile = File(...), edit_token: str
     except ValueError:
         raise HTTPException(status_code=400, detail={"code": "bad_image"})
     await _cv_store.set_photo(cv_id, jpeg)
-    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=True)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=True, **_orig(row))
 
 
 @app.delete("/cv/{cv_id}/photo", response_model=CVResponse)
@@ -444,7 +469,49 @@ async def remove_cv_photo(cv_id: str, x_edit_token: str = Header("")):
     if not _cv_store.verify_edit_token(row, x_edit_token):
         raise HTTPException(status_code=403, detail="Invalid or missing edit token")
     await _cv_store.set_photo(cv_id, None)
-    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=False)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=False, **_orig(row))
+
+
+_ORIGINAL_MEDIA = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
+@app.get("/cv/{cv_id}/original")
+async def get_cv_original(cv_id: str, download: bool = False):
+    """The file this CV was built from, exactly as uploaded. A PDF is shown inline (the browser's own
+    viewer); a Word file can only be downloaded - /original.html is its on-page preview."""
+    orig = await _cv_store.get_original(cv_id)
+    if orig is None:
+        raise HTTPException(status_code=404, detail="No original file for this CV")
+    inline = orig["kind"] == "pdf" and not download
+    disposition = f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(orig['name'] or 'cv.' + orig['kind'])}"
+    return Response(content=orig["data"], media_type=_ORIGINAL_MEDIA[orig["kind"]],
+                    headers={"Content-Disposition": disposition, "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/cv/{cv_id}/original.html", response_class=HTMLResponse)
+async def get_cv_original_preview(cv_id: str):
+    """An on-page preview of an uploaded Word file (see src/cv/docx_preview.py). PDFs preview natively."""
+    orig = await _cv_store.get_original(cv_id)
+    if orig is None or orig["kind"] != "docx":
+        raise HTTPException(status_code=404, detail="No previewable original for this CV")
+    try:
+        page = await asyncio.to_thread(docx_to_html, orig["data"])
+    except Exception:
+        raise HTTPException(status_code=422, detail="Could not preview that file")
+    # Escaped by construction, and locked down anyway: no script, no network, no framing by other origins' pages.
+    return HTMLResponse(page, headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'", "X-Content-Type-Options": "nosniff"})
+
+
+@app.delete("/cv/{cv_id}/original", response_model=CVResponse)
+async def remove_cv_original(cv_id: str, x_edit_token: str = Header("")):
+    """Deletes the stored original file (the CV and its templates stay). Token in a header, not the URL."""
+    row = await _cv_store.get(cv_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    if not _cv_store.verify_edit_token(row, x_edit_token):
+        raise HTTPException(status_code=403, detail="Invalid or missing edit token")
+    await _cv_store.set_original(cv_id, None)
+    return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")))
 
 
 @app.get("/cv/{cv_id}.{extension}")
@@ -493,7 +560,7 @@ async def get_cv(cv_id: str):
     row = await _cv_store.get(cv_id)
     if row is None:
         raise HTTPException(status_code=404, detail="CV not found")
-    return CVResponse(id=row["id"], template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")))
+    return CVResponse(id=row["id"], template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")), **_orig(row))
 
 
 # ---- B2C web flow --------------------------------------------------------------
@@ -749,6 +816,7 @@ async def cv_builder_result(request: Request, cv_id: str, lang: str = "en"):
         "cv_result.html",
         {
             "lang": lang, "cv_id": cv_id, "cv_templates": template_labels,
+            "original": {"name": row.get("original_name"), "kind": row.get("original_kind")} if row.get("has_original") else None,
             "meta_title": meta_title, "meta_description": meta_description,
             "t": lambda key, **kw: t_chrome(key, lang, **kw),
         },
