@@ -37,7 +37,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from src.cv.extract import edit_cv_profile, extract_cv_profile
-from src.cv.pdf_text import MAX_UPLOAD_BYTES as CV_PDF_MAX_BYTES, PdfError, extract_pdf_text
+from src.cv.doc_text import DocError, extract_document_text
+from src.cv.pdf_text import MAX_CHARS as CV_TEXT_MAX_CHARS, MAX_UPLOAD_BYTES as CV_PDF_MAX_BYTES
 from src.cv.photo import MAX_UPLOAD_BYTES as CV_PHOTO_MAX_BYTES, process_cv_photo, to_data_uri
 from src.cv.render import TEMPLATES as CV_TEMPLATES, render_cv_html, render_cv_markdown, render_cv_pdf
 from src.cv.schema import Contact, CVProfile, Education, Experience
@@ -320,33 +321,42 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
     return CVCreateResponse(id=cv_id, template=request.template, profile=profile.model_dump(), edit_token=edit_token)
 
 
-class CVCreateFromPdfResponse(CVCreateResponse):
-    source_text: str  # what was read from the PDF, so a client can show it as the CV's source
+class CVCreateFromFileResponse(CVCreateResponse):
+    source_text: str  # what was read from the file (plus any typed notes), so a client can show it as the CV's source
 
 
-@app.post("/cv/from-pdf", response_model=CVCreateFromPdfResponse)
-async def create_cv_from_pdf(file: UploadFile = File(...), template: str = Form("modern"), model_name: Optional[str] = Form(None)):
-    """An existing CV as a PDF in, the same stored/editable/shareable CV out as POST /cv/from-text:
-    the text is read from the PDF and goes through the same extraction. The PDF itself isn't kept."""
+@app.post("/cv/from-file", response_model=CVCreateFromFileResponse)
+@app.post("/cv/from-pdf", response_model=CVCreateFromFileResponse, include_in_schema=False)  # the name an earlier client used
+async def create_cv_from_file(
+    file: UploadFile = File(...), template: str = Form("modern"), model_name: Optional[str] = Form(None),
+    extra_text: str = Form("", max_length=5_000),
+):
+    """An existing CV as a PDF or Word (.docx) file in, the same stored/editable/shareable CV out as
+    POST /cv/from-text: the text is read from the file and goes through the same extraction. Anything the
+    person typed alongside it (extra_text) is added as notes. The file itself isn't kept."""
     if template not in CV_TEMPLATES:
         raise HTTPException(status_code=400, detail=f"Unknown template '{template}'. Must be one of {CV_TEMPLATES}.")
     raw = await file.read(CV_PDF_MAX_BYTES + 1)
     if len(raw) > CV_PDF_MAX_BYTES:
-        raise HTTPException(status_code=413, detail={"code": "pdf_too_large"})
+        raise HTTPException(status_code=413, detail={"code": "doc_too_large"})
 
     try:
         await _acquire_or_reject(_pdf_gate)
     except ServerBusy:
         raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
     try:
-        text = await asyncio.wait_for(asyncio.to_thread(extract_pdf_text, raw), timeout=20)
-    except PdfError as e:
-        # not_pdf / encrypted / too_many_pages / unreadable are the file's fault (400); no_text is a valid PDF we can't use (422)
-        raise HTTPException(status_code=422 if e.code == "no_text" else 400, detail={"code": f"pdf_{e.code}"})
+        text = await asyncio.wait_for(asyncio.to_thread(extract_document_text, raw), timeout=20)
+    except DocError as e:
+        # unsupported / legacy / encrypted / too_many_pages / unreadable are the file's fault (400); no_text is a valid file we can't use (422)
+        raise HTTPException(status_code=422 if e.code == "no_text" else 400, detail={"code": f"doc_{e.code}"})
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=400, detail={"code": "pdf_unreadable"})
+        raise HTTPException(status_code=400, detail={"code": "doc_unreadable"})
     finally:
         _pdf_gate.release()
+
+    notes = extra_text.strip()
+    if notes:
+        text = f"{text}\n\nAdditional notes from the person:\n{notes}"[:CV_TEXT_MAX_CHARS + 5_100]
 
     try:
         await _acquire_or_reject(_llm_gate)
@@ -357,10 +367,10 @@ async def create_cv_from_pdf(file: UploadFile = File(...), template: str = Form(
     finally:
         _llm_gate.release()
     if profile is None:
-        raise HTTPException(status_code=422, detail={"code": "pdf_no_cv"})
+        raise HTTPException(status_code=422, detail={"code": "doc_no_cv"})
 
     cv_id, edit_token = await _cv_store.create(profile, template)
-    return CVCreateFromPdfResponse(id=cv_id, template=template, profile=profile.model_dump(), edit_token=edit_token, source_text=text)
+    return CVCreateFromFileResponse(id=cv_id, template=template, profile=profile.model_dump(), edit_token=edit_token, source_text=text)
 
 
 class EditCVRequest(BaseModel):

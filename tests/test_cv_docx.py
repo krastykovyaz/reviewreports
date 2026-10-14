@@ -1,0 +1,200 @@
+"""Uploading an existing CV as a Word (.docx) file, and typing notes alongside any file.
+
+A .docx is a zip of XML read with the standard library. Like the PDF path: untrusted input,
+content-sniffed (not trusted by name/type), bounded, and only text is kept.
+"""
+import zipfile
+from io import BytesIO
+
+import pytest
+from fastapi.testclient import TestClient
+
+import src.service.app as app_module
+from src.cv import doc_text
+from src.cv.doc_text import DocError, extract_document_text
+from src.cv.schema import CVProfile
+from src.service.cv_store import CVStore
+from tests.test_cv_pdf import _PROFILE, _cv_pdf
+
+_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _p(text):
+    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+
+def _docx(body_paragraphs, header=(), footer=(), extra_parts=None) -> bytes:
+    b = BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml", f"<w:document {_NS}><w:body>{''.join(_p(t) for t in body_paragraphs)}</w:body></w:document>")
+        if header:
+            z.writestr("word/header1.xml", f"<w:hdr {_NS}>{''.join(_p(t) for t in header)}</w:hdr>")
+        if footer:
+            z.writestr("word/footer1.xml", f"<w:ftr {_NS}>{''.join(_p(t) for t in footer)}</w:ftr>")
+        for name, data in (extra_parts or {}).items():
+            z.writestr(name, data)
+    return b.getvalue()
+
+
+_CV_LINES = ["Jordan Reyes", "Senior Backend Engineer at Northwind Systems 2021 - Present", "Redesigned the payments pipeline and led a team of four.", "B.S. Computer Science, UC San Diego, 2018"]
+
+
+# ── extract_document_text ─────────────────────────────────────────
+
+def test_text_is_read_from_a_docx_in_order():
+    text = extract_document_text(_docx(_CV_LINES))
+    assert text.splitlines()[0] == "Jordan Reyes" and "Northwind Systems" in text and "UC San Diego" in text
+
+
+def test_header_and_footer_text_is_included_because_contact_details_live_there():
+    text = extract_document_text(_docx(_CV_LINES, header=["jordan.reyes@email.com | +1 415 555 0142"], footer=["San Francisco, CA"]))
+    assert "jordan.reyes@email.com" in text and "San Francisco, CA" in text
+
+
+def test_tables_and_tabs_and_breaks_are_read():
+    body = (f"<w:tbl><w:tr><w:tc>{_p('Skills')}</w:tc><w:tc>{_p('Python, Go, PostgreSQL, Kubernetes, Docker and more things')}</w:tc></w:tr></w:tbl>"
+            "<w:p><w:r><w:t>Role</w:t><w:tab/><w:t>Engineer</w:t><w:br/><w:t>Second line of the same paragraph for length purposes</w:t></w:r></w:p>")
+    b = BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("word/document.xml", f"<w:document {_NS}><w:body>{body}</w:body></w:document>")
+    text = extract_document_text(b.getvalue())
+    assert "Python, Go" in text and "Role Engineer" in text and "Second line" in text
+
+
+def test_a_text_box_stored_twice_is_not_duplicated():
+    line = "Jordan Reyes - Senior Backend Engineer - jordan.reyes@email.com - San Francisco"
+    text = extract_document_text(_docx([line, line, *_CV_LINES[1:]]))
+    assert text.count("Jordan Reyes - Senior") == 1
+
+
+def test_a_docx_with_no_real_text_is_no_text():
+    with pytest.raises(DocError) as e:
+        extract_document_text(_docx(["hi"]))
+    assert e.value.code == "no_text"
+
+
+def test_a_zip_that_is_not_a_word_document_is_unsupported():
+    b = BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("hello.txt", "x" * 500)
+    with pytest.raises(DocError) as e:
+        extract_document_text(b.getvalue())
+    assert e.value.code == "unsupported"
+
+
+def test_legacy_doc_and_password_protected_docx_get_the_legacy_code():
+    with pytest.raises(DocError) as e:
+        extract_document_text(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 600)
+    assert e.value.code == "legacy"
+
+
+@pytest.mark.parametrize("raw", [b"", b"plain text, not a document at all", b"<html></html>", b"MZ\x90\x00" + b"\0" * 100])
+def test_anything_else_is_unsupported(raw):
+    with pytest.raises(DocError) as e:
+        extract_document_text(raw)
+    assert e.value.code == "unsupported"
+
+
+def test_a_corrupt_docx_is_unreadable_not_a_crash():
+    good = _docx(_CV_LINES)
+    with pytest.raises(DocError) as e:
+        extract_document_text(good[: len(good) // 2])
+    assert e.value.code == "unreadable"
+    with pytest.raises(DocError) as e2:
+        extract_document_text(_docx(_CV_LINES, extra_parts={"word/header1.xml": "<not-closed"}))
+    assert e2.value.code == "unreadable"
+
+
+def test_a_part_that_inflates_beyond_the_cap_is_refused_before_reading(monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_XML_BYTES", 200)
+    with pytest.raises(DocError) as e:
+        extract_document_text(_docx(_CV_LINES))
+    assert e.value.code == "unreadable"
+
+
+def test_a_zip_with_a_huge_entry_count_is_refused(monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_ZIP_ENTRIES", 2)
+    with pytest.raises(DocError) as e:
+        extract_document_text(_docx(_CV_LINES, header=["x"], footer=["y"]))
+    assert e.value.code == "unreadable"
+
+
+def test_the_kind_is_decided_by_content_not_by_name_or_claimed_type():
+    # A PDF is still read as a PDF whatever it's called.
+    assert "Jordan Reyes" in extract_document_text(_cv_pdf())
+
+
+def test_output_is_capped(monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_CHARS", 60)
+    assert len(extract_document_text(_docx(_CV_LINES))) == 60
+
+
+# ── endpoint ──────────────────────────────────────────────────────
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "_cv_store", CVStore(db_path=str(tmp_path / "cv.db")))
+    seen = {}
+
+    async def fake_extract(text, model_name):
+        seen["text"] = text
+        return _PROFILE
+
+    monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
+    with TestClient(app_module.app) as c:
+        c.seen = seen
+        yield c
+
+
+def _post(client, data, name="cv.docx", **form):
+    return client.post("/cv/from-file", files={"file": (name, data, "application/octet-stream")}, data=form)
+
+
+def test_a_docx_creates_a_cv(client):
+    r = _post(client, _docx(_CV_LINES))
+    assert r.status_code == 200 and r.json()["profile"]["name"] == "Jordan Reyes" and r.json()["edit_token"]
+    assert "Northwind Systems" in client.seen["text"] and r.json()["source_text"] == client.seen["text"]
+
+
+def test_a_pdf_and_a_docx_go_through_the_same_endpoint(client):
+    assert _post(client, _cv_pdf(), name="cv.pdf").status_code == 200
+    assert _post(client, _docx(_CV_LINES)).status_code == 200
+
+
+def test_the_old_pdf_endpoint_name_still_works(client):
+    r = client.post("/cv/from-pdf", files={"file": ("cv.pdf", _cv_pdf(), "application/pdf")})
+    assert r.status_code == 200
+
+
+def test_typed_notes_are_added_for_the_model_and_shown_in_the_source(client):
+    r = _post(client, _docx(_CV_LINES), extra_text="Also fluent in Spanish; open to relocation.")
+    assert r.status_code == 200
+    assert "fluent in Spanish" in client.seen["text"] and "Northwind Systems" in client.seen["text"]
+    assert "fluent in Spanish" in r.json()["source_text"]
+
+
+def test_notes_are_length_limited(client):
+    assert _post(client, _docx(_CV_LINES), extra_text="x" * 5_001).status_code == 422
+
+
+def test_the_file_name_is_not_trusted(client):
+    assert _post(client, _docx(_CV_LINES), name="resume.pdf").status_code == 200
+    assert _post(client, b"MZ" + b"\0" * 300, name="resume.docx").json()["detail"]["code"] == "doc_unsupported"
+
+
+@pytest.mark.parametrize("data,status,code", [
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 600, 400, "doc_legacy"),
+    (_docx(["hi"]), 422, "doc_no_text"),
+    (b"just text", 400, "doc_unsupported"),
+])
+def test_bad_documents_get_a_specific_code(client, data, status, code):
+    r = _post(client, data)
+    assert r.status_code == status and r.json()["detail"]["code"] == code
+    assert "text" not in client.seen  # nothing unusable reaches the model
+
+
+def test_the_created_cv_is_the_same_kind_of_object_as_any_other(client):
+    d = _post(client, _docx(_CV_LINES)).json()
+    assert client.get(f"/cv/{d['id']}.pdf").content.startswith(b"%PDF")
+    assert client.post(f"/cv/{d['id']}/edit", json={"instructions": "x", "edit_token": "wrong"}).status_code == 403

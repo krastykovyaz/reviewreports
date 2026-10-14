@@ -111,7 +111,7 @@ def client(tmp_path, monkeypatch):
 
 
 def _post(client, data, name="cv.pdf", **form):
-    return client.post("/cv/from-pdf", files={"file": (name, data, "application/pdf")}, data=form)
+    return client.post("/cv/from-file", files={"file": (name, data, "application/pdf")}, data=form)
 
 
 def test_uploading_a_pdf_creates_a_cv_like_pasted_text_does(client):
@@ -147,9 +147,9 @@ def test_template_choice_is_honoured_and_validated(client):
 
 
 @pytest.mark.parametrize("data,status,code", [
-    (b"not a pdf at all", 400, "pdf_not_pdf"),
-    (b"<html><script>alert(1)</script></html>", 400, "pdf_not_pdf"),
-    (_blank_pdf(), 422, "pdf_no_text"),
+    (b"not a pdf at all", 400, "doc_unsupported"),
+    (b"<html><script>alert(1)</script></html>", 400, "doc_unsupported"),
+    (_blank_pdf(), 422, "doc_no_text"),
 ])
 def test_bad_uploads_get_a_specific_code(client, data, status, code):
     r = _post(client, data)
@@ -157,15 +157,15 @@ def test_bad_uploads_get_a_specific_code(client, data, status, code):
 
 
 def test_encrypted_is_400_and_too_many_pages_is_400(client):
-    assert _post(client, _encrypted_pdf()).json()["detail"]["code"] == "pdf_encrypted"
+    assert _post(client, _encrypted_pdf()).json()["detail"]["code"] == "doc_encrypted"
     r = _post(client, _blank_pdf(pdf_text.MAX_PAGES + 1))
-    assert r.status_code == 400 and r.json()["detail"]["code"] == "pdf_too_many_pages"
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "doc_too_many_pages"
 
 
 def test_oversize_is_413_and_never_reaches_the_model(client, monkeypatch):
     monkeypatch.setattr(app_module, "CV_PDF_MAX_BYTES", 1000)
     r = _post(client, _cv_pdf())
-    assert r.status_code == 413 and r.json()["detail"]["code"] == "pdf_too_large" and "text" not in client.seen
+    assert r.status_code == 413 and r.json()["detail"]["code"] == "doc_too_large" and "text" not in client.seen
 
 
 def test_nothing_reaches_the_model_when_the_pdf_is_unusable(client):
@@ -177,7 +177,7 @@ def test_a_model_that_finds_no_cv_in_the_text_is_422(client, monkeypatch):
     async def none(text, model_name): return None
     monkeypatch.setattr(app_module, "extract_cv_profile", none)
     r = _post(client, _cv_pdf())
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "pdf_no_cv"
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "doc_no_cv"
 
 
 def test_gates_are_released_after_failures(client):
