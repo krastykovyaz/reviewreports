@@ -4,6 +4,12 @@ import pytest
 
 # TestClient runs the app's lifespan; the retention loop must never touch the real stores from a test run.
 os.environ["DISABLE_RETENTION_LOOP"] = "1"
+# The service loads the host's real .env at import (load_dotenv, which never overrides a variable that is already set).
+# That file restricts PUBLIC_KINDS to website_audit in production, which silently changed what the tests exercised:
+# they passed on a clean checkout and failed here. Pin the settings the tests depend on so the result is the same everywhere.
+os.environ["PUBLIC_KINDS"] = ""
+os.environ.pop("REVIEW_ALLOWED_ROOTS", None)
+os.environ.pop("PUBLIC_MODELS", None)
 
 
 @pytest.fixture(autouse=True)
