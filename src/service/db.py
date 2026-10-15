@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 import aiosqlite
 
+from src.service.sqlite_utils import BUSY_TIMEOUT_SEC, maybe_vacuum
+
 
 class JobStatus(str, Enum):
     PENDING = "pending"
@@ -43,7 +45,7 @@ class JobStore:
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
 
     async def init(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             await db.execute(_SCHEMA)
             # CREATE TABLE IF NOT EXISTS doesn't retrofit new columns onto a
             # database file created before they existed, so migrate explicitly.
@@ -56,7 +58,7 @@ class JobStore:
     async def create_job(self, kind: str, subject: str, lang: str = "en") -> str:
         job_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             await db.execute(
                 "INSERT INTO jobs (id, kind, subject, lang, status, report_json, error, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)",
@@ -78,7 +80,7 @@ class JobStore:
         """Mark every pending/running job failed; returns how many. For startup
         only: those jobs' background tasks died with the previous process."""
         now = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             cursor = await db.execute(
                 "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE status IN (?, ?)",
                 (JobStatus.FAILED.value, reason, now, JobStatus.PENDING.value, JobStatus.RUNNING.value),
@@ -89,23 +91,23 @@ class JobStore:
     async def _update(self, job_id: str, **fields: Any) -> None:
         fields["updated_at"] = datetime.now(timezone.utc).isoformat()
         set_clause = ", ".join(f"{k} = ?" for k in fields)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             await db.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", (*fields.values(), job_id))
             await db.commit()
 
     async def purge_expired(self, cutoff_iso: str) -> list:
         """Deletes reports not updated since cutoff; returns [(id, subject)] so an uploaded file a job pointed at can be removed."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             async with db.execute("SELECT id, subject FROM jobs WHERE updated_at < ?", (cutoff_iso,)) as cursor:
                 rows = [(r[0], r[1]) async for r in cursor]
             if rows:
                 await db.execute("DELETE FROM jobs WHERE updated_at < ?", (cutoff_iso,))
                 await db.commit()
-                await db.execute("VACUUM")
+                await maybe_vacuum(db)
         return rows
 
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)) as cursor:
                 row = await cursor.fetchone()

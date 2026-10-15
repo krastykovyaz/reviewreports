@@ -7,6 +7,7 @@ import src.service.app as app_module
 from src.report.schema import Pillar, Report, ReportMeta
 from src.service.cv_store import CVStore
 from src.service.db import JobStore
+from tests.helpers import run
 
 
 async def _noop_async(*args, **kwargs):

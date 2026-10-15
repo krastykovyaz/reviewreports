@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional
 
 import aiosqlite
 
+from src.service.sqlite_utils import BUSY_TIMEOUT_SEC, maybe_vacuum
+
 from src.cv.schema import CVProfile
 
 _SCHEMA = """
@@ -45,7 +47,7 @@ class CVStore:
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
 
     async def init(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             await db.execute(_SCHEMA)
             # A database created before edit_token existed won't get it from
             # CREATE TABLE IF NOT EXISTS - add it if missing so an upgrade in
@@ -72,7 +74,7 @@ class CVStore:
         cv_id = uuid.uuid4().hex
         edit_token = secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             await db.execute(
                 "INSERT INTO cv_profiles (id, profile_json, template, created_at, edit_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (cv_id, profile.model_dump_json(), template, now, edit_token, now),
@@ -90,7 +92,7 @@ class CVStore:
         return bool(stored and token and hmac.compare_digest(stored, token))
 
     async def get(self, cv_id: str) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             db.row_factory = aiosqlite.Row
             # Not SELECT *: every render/GET goes through here, and none of them want the photo's
             # bytes. has_photo says whether there is one; get_photo() fetches it when needed.
@@ -107,14 +109,14 @@ class CVStore:
         return CVProfile.model_validate(json.loads(row["profile_json"])) if row else None
 
     async def get_photo(self, cv_id: str) -> Optional[bytes]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             async with db.execute("SELECT photo FROM cv_profiles WHERE id = ?", (cv_id,)) as cursor:
                 row = await cursor.fetchone()
                 return bytes(row[0]) if row and row[0] else None
 
     async def set_photo(self, cv_id: str, jpeg: Optional[bytes]) -> bool:
         """Replaces the CV's photo (None removes it). Template, profile and token are untouched."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             cursor = await db.execute("UPDATE cv_profiles SET photo = ?, updated_at = ? WHERE id = ?", (jpeg, _now(), cv_id))
             await db.commit()
             return cursor.rowcount > 0
@@ -123,32 +125,32 @@ class CVStore:
         """Deletes every CV not changed since cutoff (profile, photo and original go with the row) and
         returns their ids so callers can remove anything derived from them. Viewing doesn't count as a
         change: a share link that is only ever opened still expires."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             async with db.execute("SELECT id FROM cv_profiles WHERE updated_at < ?", (cutoff_iso,)) as cursor:
                 ids = [r[0] async for r in cursor]
             if ids:
                 await db.execute("DELETE FROM cv_profiles WHERE updated_at < ?", (cutoff_iso,))
                 await db.commit()
-                await db.execute("VACUUM")  # hand the freed photo/original pages back to the disk
+                await maybe_vacuum(db)  # hand freed photo/original pages back to the disk, but only when there is a lot to give
         return ids
 
     async def delete(self, cv_id: str) -> bool:
         """Removes the whole CV: profile, photo and the uploaded original go with the row."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             cursor = await db.execute("DELETE FROM cv_profiles WHERE id = ?", (cv_id,))
             await db.commit()
             return cursor.rowcount > 0
 
     async def get_original(self, cv_id: str) -> Optional[Dict[str, Any]]:
         """The file this CV was built from (bytes, name, kind 'pdf'|'docx'), if one was uploaded."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             async with db.execute("SELECT original, original_name, original_kind FROM cv_profiles WHERE id = ?", (cv_id,)) as cursor:
                 row = await cursor.fetchone()
                 return {"data": bytes(row[0]), "name": row[1], "kind": row[2]} if row and row[0] else None
 
     async def set_original(self, cv_id: str, data: Optional[bytes], name: Optional[str] = None, kind: Optional[str] = None) -> bool:
         """Keeps (or, with None, removes) the uploaded original next to the CV built from it."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             cursor = await db.execute(
                 "UPDATE cv_profiles SET original = ?, original_name = ?, original_kind = ?, updated_at = ? WHERE id = ?",
                 (data, name if data else None, kind if data else None, _now(), cv_id),
@@ -160,7 +162,7 @@ class CVStore:
         """Overwrites an existing CV's profile in place (its template and
         created_at are untouched) — used by the "describe changes" edit flow,
         which revises a profile without minting a new id/link."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             cursor = await db.execute(
                 "UPDATE cv_profiles SET profile_json = ?, updated_at = ? WHERE id = ?",
                 (profile.model_dump_json(), _now(), cv_id),

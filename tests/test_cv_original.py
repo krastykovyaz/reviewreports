@@ -15,8 +15,7 @@ from fastapi.testclient import TestClient
 import src.service.app as app_module
 from src.cv.docx_preview import docx_to_html
 from src.service.cv_store import CVStore
-from tests.test_cv_docx import _CV_LINES, _NS, _docx
-from tests.test_cv_pdf import _PROFILE, _cv_pdf
+from tests.helpers import _PROFILE, _cv_pdf, _NS, _docx, _CV_LINES, _jpeg, _up, run
 
 
 @pytest.fixture()
@@ -31,8 +30,6 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def _up(client, data, name="My CV.pdf"):
-    return client.post("/cv/from-file", files={"file": (name, data, "application/octet-stream")}).json()
 
 
 # ── stored and served ─────────────────────────────────────────────
@@ -180,7 +177,7 @@ def test_bold_switched_off_is_not_bold():
 def test_a_broken_docx_gives_422_not_a_crash(client):
     d = _up(client, _docx(_CV_LINES), "resume.docx")
     import asyncio
-    bad = asyncio.new_event_loop().run_until_complete(app_module._cv_store.set_original(d["id"], b"PK\x03\x04garbage", "x.docx", "docx"))
+    bad = asyncio.run(app_module._cv_store.set_original(d["id"], b"PK\x03\x04garbage", "x.docx", "docx"))
     assert bad and client.get(f"/cv/{d['id']}/original.html").status_code == 422
 
 
@@ -240,10 +237,12 @@ def test_deleting_a_cv_removes_everything_stored_for_it(client):
     assert r.status_code == 200 and r.json() == {"deleted": True}
     for url in (f"/cv/{i}", f"/cv/{i}/original", f"/cv/{i}/original.html", f"/cv/{i}.html", f"/cv/{i}.pdf", f"/cv/{i}.md", f"/cv-builder/{i}"):
         assert client.get(url).status_code == 404, url
-    import asyncio
     store = app_module._cv_store
-    loop = asyncio.new_event_loop()
-    assert loop.run_until_complete(store.get_original(i)) is None and loop.run_until_complete(store.get_photo(i)) is None
+
+    async def stored():
+        return await store.get_original(i), await store.get_photo(i)
+
+    assert run(stored()) == (None, None)
 
 
 def test_deleting_needs_the_edit_token(client):
@@ -278,5 +277,5 @@ def test_a_cv_with_no_stored_token_can_never_be_deleted_by_anyone(client):
     async def strip():
         async with aiosqlite.connect(app_module._cv_store.db_path) as db:
             await db.execute("UPDATE cv_profiles SET edit_token = NULL WHERE id = ?", (d["id"],)); await db.commit()
-    asyncio.new_event_loop().run_until_complete(strip())
+    asyncio.run(strip())
     assert client.delete(f"/cv/{d['id']}", headers={"X-Edit-Token": ""}).status_code == 403

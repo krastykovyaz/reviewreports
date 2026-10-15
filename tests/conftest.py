@@ -20,3 +20,23 @@ def _isolated_previews(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "_PREVIEW_DIR", tmp_path / "previews")
     monkeypatch.setattr(app_module, "_retention_marker", lambda: tmp_path / ".retention_started")
     monkeypatch.setattr(app_module, "_prewarm_preview", lambda cv_id: None)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_stores(tmp_path, monkeypatch):
+    """The app's stores, upload directory and model registry point at the host's REAL files by default (workdir/service/*.db,
+    workdir/uploads, and the model keys loaded from the host's .env). `with TestClient(app)` runs the lifespan, which
+    initialises them - so a test that patched only one store still opened the other real database, and loaded real model
+    credentials. Every test now starts on throwaway copies; a test that wants its own still monkeypatches over these."""
+    import src.service.app as app_module
+    from src.service.cv_store import CVStore
+    from src.service.db import JobStore
+
+    monkeypatch.setattr(app_module, "_store", JobStore(db_path=str(tmp_path / "default-jobs.db")))
+    monkeypatch.setattr(app_module, "_cv_store", CVStore(db_path=str(tmp_path / "default-cv.db")))
+    monkeypatch.setattr(app_module, "_UPLOAD_DIR", str(tmp_path / "default-uploads"))
+
+    async def _no_model_init():
+        return None
+
+    monkeypatch.setattr(app_module.model_manager, "initialize", _no_model_init)

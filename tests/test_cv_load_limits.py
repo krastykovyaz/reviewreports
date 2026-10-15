@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import src.service.app as app_module
 from src.cv.schema import MAX_PROFILE_CHARS
 from src.service.cv_store import CVStore
-from tests.test_cv_pdf import _PROFILE
+from tests.helpers import run, _PROFILE
 
 _PAYLOAD = _PROFILE.model_dump()
 

@@ -11,9 +11,7 @@ from PIL import Image
 import src.service.app as app_module
 from src.cv.preview_card import RasterError, compose_card, rasterize_first_page
 from src.service.cv_store import CVStore
-from tests.test_cv_docx import _CV_LINES, _docx
-from tests.test_cv_pdf import _PROFILE, _cv_pdf
-from tests.test_cv_photo import _jpeg
+from tests.helpers import _PROFILE, _cv_pdf, _docx, _CV_LINES, _jpeg
 
 CRAWLERS = ["facebookexternalhit/1.1", "WhatsApp/2.23.20.0", "TelegramBot (like TwitterBot)", "LinkedInBot/1.0", "Twitterbot/1.0"]
 

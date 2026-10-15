@@ -10,9 +10,7 @@ from fastapi.testclient import TestClient
 import src.service.app as app_module
 from src.service.cv_store import CVStore
 from src.service.db import JobStore
-from tests.test_cv_original import _up, _cv_pdf, _docx, _CV_LINES  # noqa: F401
-from tests.test_cv_pdf import _PROFILE
-from tests.test_cv_photo import _jpeg
+from tests.helpers import run, _PROFILE, _cv_pdf, _jpeg, _up
 
 DAY = timedelta(days=1)
 
@@ -170,7 +168,7 @@ def test_responses_say_when_the_cv_will_be_deleted(client):
 def test_a_change_pushes_the_expiry_out_again(client, monkeypatch):
     d = _up(client, _cv_pdf())
     import asyncio
-    asyncio.new_event_loop().run_until_complete(_age(app_module._cv_store, d["id"], datetime.now(timezone.utc) - 5 * DAY))
+    asyncio.run(_age(app_module._cv_store, d["id"], datetime.now(timezone.utc) - 5 * DAY))
     assert 1.9 < _days_left(client.get(f"/cv/{d['id']}").json()["expires_at"]) < 2.1
     r = client.post(f"/cv/{d['id']}/photo", files={"file": ("p.jpg", _jpeg(), "image/jpeg")}, data={"edit_token": d["edit_token"]}).json()
     assert 6.99 < _days_left(r["expires_at"]) < 7.01

@@ -16,32 +16,14 @@ from src.cv.pdf_text import PdfError, extract_pdf_text
 from src.cv.render import render_cv_pdf
 from src.cv.schema import CVProfile
 from src.service.cv_store import CVStore
-
-_PROFILE = CVProfile.model_validate({
-    "name": "Jordan Reyes", "role": "Senior Backend Engineer",
-    "contact": {"email": "jordan.reyes@email.com", "location": "San Francisco"},
-    "experience": [{"title": "Senior Backend Engineer", "organization": "Northwind Systems", "start": "2021", "end": "Present",
-                    "bullets": ["Redesigned the payments pipeline.", "Led a team of four engineers."]}],
-    "education": [{"degree": "B.S. Computer Science", "institution": "UC San Diego", "year": "2018"}],
-    "skills": ["Python", "Go", "PostgreSQL"],
-})
+from tests.helpers import _PROFILE, _cv_pdf, _blank_pdf, _encrypted_pdf
 
 
-def _cv_pdf() -> bytes:
-    return render_cv_pdf(_PROFILE, "classic")
 
 
-def _blank_pdf(pages=1) -> bytes:
-    w = PdfWriter()
-    for _ in range(pages):
-        w.add_blank_page(width=200, height=200)
-    b = BytesIO(); w.write(b); return b.getvalue()
 
 
-def _encrypted_pdf(password="secret") -> bytes:
-    w = PdfWriter(clone_from=PdfReader(BytesIO(_cv_pdf())))
-    w.encrypt(password)
-    b = BytesIO(); w.write(b); return b.getvalue()
+
 
 
 # ── extract_pdf_text ──────────────────────────────────────────────

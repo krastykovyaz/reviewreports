@@ -19,6 +19,7 @@ from src.cv.photo import DATA_URI_PREFIX, process_cv_photo, to_data_uri
 from src.cv.render import TEMPLATES, render_cv_html, render_cv_pdf
 from src.cv.schema import Contact, CVProfile, Education, Experience
 from src.service.cv_store import CVStore
+from tests.helpers import _jpeg
 
 _PAYLOAD = {
     "name": "Jordan Reyes", "role": "Senior Backend Engineer",
@@ -33,8 +34,6 @@ _PAYLOAD = {
 }
 
 
-def _jpeg(size=(800, 400), color=(200, 40, 40), **kw) -> bytes:
-    b = BytesIO(); Image.new("RGB", size, color).save(b, "JPEG", **kw); return b.getvalue()
 
 
 def _open(data: bytes) -> Image.Image:
@@ -224,9 +223,9 @@ def test_oversize_is_413(client, monkeypatch):
 def test_a_new_photo_replaces_the_old_one(client):
     created = _create(client)
     _upload(client, created, data=_jpeg(color=(255, 0, 0)))
-    first = asyncio.new_event_loop().run_until_complete(app_module._cv_store.get_photo(created["id"]))
+    first = asyncio.run(app_module._cv_store.get_photo(created["id"]))
     _upload(client, created, data=_jpeg(color=(0, 0, 255)))
-    second = asyncio.new_event_loop().run_until_complete(app_module._cv_store.get_photo(created["id"]))
+    second = asyncio.run(app_module._cv_store.get_photo(created["id"]))
     assert first != second
 
 

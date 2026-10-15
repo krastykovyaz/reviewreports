@@ -133,6 +133,8 @@ _preview_gate = asyncio.Semaphore(1)
 # and never on the event loop (a synchronous render froze every request - /health included - while it ran).
 _render_gate = asyncio.Semaphore(2)
 _RENDER_TIMEOUT_SEC = 30
+_DOC_TIMEOUT_SEC = 20          # reading an uploaded PDF/Word file
+_JOB_TIMEOUT_SEC = float(os.getenv("AUDIT_JOB_TIMEOUT_SEC", "300"))  # one audit, start to finish
 _preview_locks: dict = {}
 _PREVIEW_DIR = Path(assemble_project_path("workdir/service/previews"))
 _PREVIEW_SITE = "https://tsech.online/audit"
@@ -223,19 +225,24 @@ class ServerBusy(Exception):
     pass
 
 
+async def _run_releasing_on_finish(gate: asyncio.Semaphore, timeout: float, fn, *args, **kwargs):
+    """Runs fn in a thread; `gate` (already acquired by the caller) is released when the THREAD finishes. A thread can't be
+    cancelled, so wait_for() alone stops waiting but leaves it running while the gate looks free - timed-out work then
+    piles up beyond the gate's size. Raises asyncio.TimeoutError if fn doesn't finish within `timeout`."""
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+    fut.add_done_callback(lambda _f: gate.release())
+    return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+
+
 async def _render_in_pool(fn, *args, **kwargs):
-    """Runs a CPU-heavy render in a thread under _render_gate with a timeout. A thread can't be cancelled, so on
-    timeout the caller gets a 503 straight away but the gate is only released when the thread actually finishes -
-    timed-out renders can't pile up beyond the gate's size."""
+    """Runs a CPU-heavy render in a thread under _render_gate with a timeout (503 when busy or too slow)."""
     try:
         await asyncio.wait_for(_render_gate.acquire(), timeout=10)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
-    loop = asyncio.get_running_loop()
-    fut = loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-    fut.add_done_callback(lambda _f: _render_gate.release())
     try:
-        return await asyncio.wait_for(asyncio.shield(fut), timeout=_RENDER_TIMEOUT_SEC)
+        return await _run_releasing_on_finish(_render_gate, _RENDER_TIMEOUT_SEC, fn, *args, **kwargs)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=503, detail="Rendering took too long")
 
@@ -324,8 +331,12 @@ async def _run_job(job_id: str, kind: str, url: str, model_name: Optional[str], 
     try:
         await _store.mark_running(job_id)
         try:
-            report = await generate_report(kind=kind, input=url, model_name=model_name, lang=lang)
+            # Sub-steps have their own timeouts, but a hang in the browser or a model call would otherwise hold one of the
+            # two audit slots until the service restarted. Cancelling runs the browser session's cleanup.
+            report = await asyncio.wait_for(generate_report(kind=kind, input=url, model_name=model_name, lang=lang), timeout=_JOB_TIMEOUT_SEC)
             await _store.mark_done(job_id, report.model_dump(mode="json"))
+        except asyncio.TimeoutError:
+            await _store.mark_failed(job_id, f"The check took longer than {int(_JOB_TIMEOUT_SEC)} seconds and was stopped. Please try again.")
         except Exception as exc:  # noqa: BLE001 - persist any failure onto the job record
             await _store.mark_failed(job_id, str(exc))
     finally:
@@ -512,14 +523,13 @@ async def create_cv_from_file(
     except ServerBusy:
         raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
     try:
-        text = await asyncio.wait_for(asyncio.to_thread(extract_document_text, raw), timeout=20)
+        # _pdf_gate is held until the parsing THREAD ends, not until we stop waiting for it.
+        text = await _run_releasing_on_finish(_pdf_gate, _DOC_TIMEOUT_SEC, extract_document_text, raw)
     except DocError as e:
         # unsupported / legacy / encrypted / too_many_pages / unreadable are the file's fault (400); no_text is a valid file we can't use (422)
         raise HTTPException(status_code=422 if e.code == "no_text" else 400, detail={"code": f"doc_{e.code}"})
     except asyncio.TimeoutError:
         raise HTTPException(status_code=400, detail={"code": "doc_unreadable"})
-    finally:
-        _pdf_gate.release()
 
     notes = extra_text.strip()
     if notes:
@@ -670,7 +680,9 @@ async def get_cv_original_page(cv_id: str, lang: str = "en"):
         page = _pdf_original_page(cv_id, orig["name"] or "cv.pdf", t_chrome("ui.cv.download_original", lang))
     else:
         try:
-            page = await asyncio.to_thread(docx_to_html, orig["data"])
+            page = await _render_in_pool(docx_to_html, orig["data"])
+        except HTTPException:
+            raise  # busy / too slow: 503, not "could not preview"
         except Exception:
             raise HTTPException(status_code=422, detail="Could not preview that file")
     page = _inject_og_meta(page, title=title, description=description, url=f"{_PREVIEW_SITE}/cv/{cv_id}/original.html",

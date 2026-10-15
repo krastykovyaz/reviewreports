@@ -560,7 +560,7 @@ def test_edit_cv_a_cvs_own_token_does_not_work_on_a_different_cv(client, monkeyp
 
 def test_cv_from_text_returns_503_when_llm_gate_is_full(client, monkeypatch):
     monkeypatch.setattr(app_module, "_llm_gate", asyncio.Semaphore(1))
-    asyncio.new_event_loop().run_until_complete(app_module._llm_gate.acquire())
+    asyncio.run(app_module._llm_gate.acquire())
     try:
         resp = client.post("/cv/from-text", json={"text": "Jordan Reyes, jordan@example.com"})
         assert resp.status_code == 503
@@ -571,7 +571,7 @@ def test_cv_from_text_returns_503_when_llm_gate_is_full(client, monkeypatch):
 def test_edit_cv_returns_503_when_llm_gate_is_full(client, monkeypatch):
     created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
     monkeypatch.setattr(app_module, "_llm_gate", asyncio.Semaphore(1))
-    asyncio.new_event_loop().run_until_complete(app_module._llm_gate.acquire())
+    asyncio.run(app_module._llm_gate.acquire())
     try:
         resp = client.post(f"/cv/{created['id']}/edit", json={"instructions": "add a skill", "edit_token": created["edit_token"]})
         assert resp.status_code == 503

@@ -14,30 +14,14 @@ from src.cv import doc_text
 from src.cv.doc_text import DocError, extract_document_text
 from src.cv.schema import CVProfile
 from src.service.cv_store import CVStore
-from tests.test_cv_pdf import _PROFILE, _cv_pdf
-
-_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+from tests.helpers import _PROFILE, _cv_pdf, _NS, _p, _docx, _CV_LINES
 
 
-def _p(text):
-    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
 
 
-def _docx(body_paragraphs, header=(), footer=(), extra_parts=None) -> bytes:
-    b = BytesIO()
-    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", "<Types/>")
-        z.writestr("word/document.xml", f"<w:document {_NS}><w:body>{''.join(_p(t) for t in body_paragraphs)}</w:body></w:document>")
-        if header:
-            z.writestr("word/header1.xml", f"<w:hdr {_NS}>{''.join(_p(t) for t in header)}</w:hdr>")
-        if footer:
-            z.writestr("word/footer1.xml", f"<w:ftr {_NS}>{''.join(_p(t) for t in footer)}</w:ftr>")
-        for name, data in (extra_parts or {}).items():
-            z.writestr(name, data)
-    return b.getvalue()
 
 
-_CV_LINES = ["Jordan Reyes", "Senior Backend Engineer at Northwind Systems 2021 - Present", "Redesigned the payments pipeline and led a team of four.", "B.S. Computer Science, UC San Diego, 2018"]
+
 
 
 # ── extract_document_text ─────────────────────────────────────────
