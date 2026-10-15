@@ -87,7 +87,7 @@ async def audit_page(url: str, headless: bool = True) -> AsyncIterator:
         page = await browser.get_current_page()
         await ensure_public_url(url)
         await page.goto(url)
-        await ensure_public_url(str(await eval_json(page, "location.href")))
+        await ensure_public_url(str(await eval_json(page, "() => location.href")))
         yield page
     finally:
         await browser.stop()
