@@ -6,20 +6,11 @@ internal after the page was fetched).
 """
 import pytest
 
-from src.audit import browser_session
-from src.audit.browser_session import ensure_public_url
+from src.audit import browser_session, http_client
+from src.audit.browser_session import assert_page_is_public
 from src.audit.collectors.links import collect_broken_links
-from src.audit.http_client import SSRFBlocked
+from src.audit.http_client import SSRFBlocked, assert_public_url
 from src.report.schema import Status
-
-
-def _like_the_real_page(js: str) -> None:
-    """The framework's page.evaluate rejects anything that isn't a function expression. A test double that accepts any
-    string let a bare `location.href` ship (every website audit then failed with 'JavaScript code must start with
-    (...args) => ...'), so the fake enforces the same contract."""
-    # Mirrors src/environment/browser/actor/page.py exactly: starts with "(" and contains "=>".
-    if not (js.startswith("(") and "=>" in js):
-        raise RuntimeError(f"JavaScript code must start with (...args) => format. Got: {js[:40]}...")
 
 
 # ── the link checker ──────────────────────────────────────────────
@@ -67,109 +58,99 @@ async def test_a_mix_only_reports_on_the_public_links(monkeypatch):
     assert "127.0.0.1" not in text
 
 
-# ── the browser's final destination ───────────────────────────────
+# ── the browser's final destination ──
+# (main's own tests cover assert_page_is_public in isolation; these pin how audit_page uses it, and the order.)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", [
     "http://127.0.0.1:8001/docs", "http://localhost/", "http://[::1]/", "http://169.254.169.254/latest/",
-    "http://10.1.2.3/", "http://100.64.0.1/", "http://metadata.google.internal/",
-    "file:///etc/passwd", "ftp://example.com/", "javascript:alert(1)", "about:blank", "chrome://settings", "", "not a url",
+    "http://10.1.2.3/", "http://100.64.0.1/", "http://[::ffff:10.0.0.1]/", "http://metadata.google.internal/",
+    "file:///etc/passwd", "ftp://example.com/", "javascript:alert(1)", "about:blank", "chrome://settings",
 ])
-async def test_the_final_page_must_be_public_http(bad):
+async def test_the_start_and_final_urls_must_be_public_http(bad):
     with pytest.raises(SSRFBlocked):
-        await ensure_public_url(bad)
+        await assert_public_url(bad)
 
 
-@pytest.mark.asyncio
-async def test_a_public_page_passes(monkeypatch):
-    monkeypatch.setattr(browser_session, "_resolve_all_sync", lambda host: ["93.184.216.34"])
-    await ensure_public_url("https://example.com/some/path?x=1")
+class _Page:
+    """A page double with the real API's shape: goto() and get_url() (src/environment/browser/actor/page.py)."""
+    def __init__(self, lands_on):
+        self.lands_on, self.calls = lands_on, []
+
+    async def goto(self, url): self.calls.append(("goto", url))
+    async def get_url(self): return self.lands_on
 
 
-@pytest.mark.asyncio
-async def test_a_hostname_that_resolves_to_an_internal_address_is_refused(monkeypatch):
-    monkeypatch.setattr(browser_session, "_resolve_all_sync", lambda host: ["93.184.216.34", "10.0.0.7"])  # one bad answer is enough
-    with pytest.raises(SSRFBlocked):
-        await ensure_public_url("https://rebind.example/")
-
-
-@pytest.mark.asyncio
-async def test_audit_page_checks_where_the_browser_ended_up(monkeypatch):
-    """A site that redirects Chromium to an internal page must abort the audit before any facts are read."""
-    calls = []
-
-    class FakePage:
-        async def goto(self, url): calls.append(("goto", url))
-        async def evaluate(self, js):
-            _like_the_real_page(js)
-            return "http://127.0.0.1:8001/docs"  # where the redirect landed
-
+def _fake_browser(page, calls):
     class FakeBrowser:
         def __init__(self, **kw): pass
         async def start(self): pass
-        async def stop(self): calls.append(("stop",))
-        async def get_current_page(self): return FakePage()
+        async def stop(self): calls.append("stop")
+        async def get_current_page(self): return page
+    return FakeBrowser
 
-    monkeypatch.setattr(browser_session, "Browser", FakeBrowser)
-    monkeypatch.setattr(browser_session, "_resolve_all_sync", lambda host: ["93.184.216.34"] if host == "example.com" else ["127.0.0.1"])
+
+@pytest.mark.asyncio
+async def test_audit_page_checks_where_the_browser_ended_up_before_yielding(monkeypatch):
+    """A site that redirects Chromium to an internal page must abort before anything is read, and still shut the browser down."""
+    calls, read = [], []
+    page = _Page("http://127.0.0.1:8001/docs")
+    monkeypatch.setattr(browser_session, "Browser", _fake_browser(page, calls))
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["93.184.216.34"] if host == "example.com" else ["127.0.0.1"])
     with pytest.raises(SSRFBlocked):
         async with browser_session.audit_page("https://example.com/"):
-            calls.append(("facts read",))
-    assert ("facts read",) not in calls and ("stop",) in calls  # nothing was read, and the browser was still shut down
+            read.append("facts")
+    assert read == [] and "stop" in calls and ("goto", "https://example.com/") in page.calls
 
 
 @pytest.mark.asyncio
 async def test_audit_page_refuses_an_internal_start_url_without_navigating(monkeypatch):
     calls = []
-
-    class FakePage:
-        async def goto(self, url): calls.append("goto")
-        async def evaluate(self, js):
-            _like_the_real_page(js)
-            return url
-
-    class FakeBrowser:
-        def __init__(self, **kw): pass
-        async def start(self): pass
-        async def stop(self): pass
-        async def get_current_page(self): return FakePage()
-
-    monkeypatch.setattr(browser_session, "Browser", FakeBrowser)
+    page = _Page("http://127.0.0.1:8001/")
+    monkeypatch.setattr(browser_session, "Browser", _fake_browser(page, calls))
     with pytest.raises(SSRFBlocked):
         async with browser_session.audit_page("http://127.0.0.1:8001/"):
             pass
-    assert calls == []
+    assert page.calls == [] and "stop" in calls
 
 
 @pytest.mark.asyncio
-async def test_the_script_audit_page_evaluates_is_a_function_expression():
-    """Pins the exact string sent to the real page, which the fakes above validate."""
-    seen = []
-
-    class FakePage:
-        async def goto(self, url): pass
-        async def evaluate(self, js):
-            seen.append(js); _like_the_real_page(js); return "https://example.com/"
-
-    class FakeBrowser:
-        def __init__(self, **kw): pass
-        async def start(self): pass
-        async def stop(self): pass
-        async def get_current_page(self): return FakePage()
-
-    import src.audit.browser_session as bs
-    orig_resolve, orig_browser = bs._resolve_all_sync, bs.Browser
-    bs._resolve_all_sync = lambda host: ["93.184.216.34"]; bs.Browser = FakeBrowser
-    try:
-        async with bs.audit_page("https://example.com/"):
-            pass
-    finally:
-        bs._resolve_all_sync, bs.Browser = orig_resolve, orig_browser
-    assert seen and all(s.startswith("() =>") for s in seen)
+async def test_a_public_page_is_yielded(monkeypatch):
+    calls = []
+    page = _Page("https://example.com/landing")
+    monkeypatch.setattr(browser_session, "Browser", _fake_browser(page, calls))
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["93.184.216.34"])
+    async with browser_session.audit_page("https://example.com/") as p:
+        assert p is page
+    assert "stop" in calls
 
 
-def test_the_contract_check_itself_rejects_a_bare_expression():
-    with pytest.raises(RuntimeError):
-        _like_the_real_page("location.href")
-    _like_the_real_page("() => location.href")
-    _like_the_real_page("(() => { return 1 })()")
+@pytest.mark.asyncio
+async def test_the_late_check_in_website_audit_catches_a_redirect_that_fires_while_the_page_settles(monkeypatch):
+    """facts['url'] is read after the page has settled; a script/meta redirect during that wait must not be published."""
+    from src.audit import website
+
+    class FakeFetched:
+        url = "https://example.com/"; headers = {}; status_code = 200; text = "<html></html>"
+
+    async def fake_fetch(url, timeout=15.0): return FakeFetched()
+
+    async def fake_try_fetch(url, timeout=10.0): return None
+
+    class _Ctx:
+        async def __aenter__(self): return _Page("https://example.com/")
+        async def __aexit__(self, *a): return False
+
+    async def fake_facts(page): return {"url": "http://169.254.169.254/latest/meta-data/", "title": "SECRET"}
+
+    monkeypatch.setattr(website, "fetch", fake_fetch)
+    monkeypatch.setattr(website, "try_fetch", fake_try_fetch)
+    monkeypatch.setattr(website, "audit_page", lambda url: _Ctx())
+    monkeypatch.setattr(website, "gather_page_facts", fake_facts)
+    monkeypatch.setattr(website, "assert_page_is_public", lambda page: __import__("asyncio").sleep(0))  # main's check passes: the page looked fine
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["169.254.169.254"] if "169.254" in host else ["93.184.216.34"])
+
+    async def fake_variant(url): return None
+    monkeypatch.setattr(website, "_http_variant", fake_variant)
+    with pytest.raises(SSRFBlocked):
+        await website.run_website_audit("https://example.com/")

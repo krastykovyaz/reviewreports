@@ -53,6 +53,24 @@ def _is_unsafe_address(raw_ip: str) -> bool:
     )
 
 
+async def assert_public_host(hostname: str) -> None:
+    """Raise SSRFBlocked unless `hostname` resolves only to public addresses."""
+    if hostname in _BLOCKED_HOSTNAMES:
+        raise SSRFBlocked(f"Refusing to fetch a blocked host: {hostname}")
+    addresses = await asyncio.to_thread(_resolve_all_sync, hostname)
+    for addr in addresses:
+        if _is_unsafe_address(addr):
+            raise SSRFBlocked(f"Refusing to fetch a non-public address: {hostname} -> {addr}")
+
+
+async def assert_public_url(url: str) -> None:
+    """Scheme + host check for any URL a browser or client is about to load."""
+    parsed = httpx.URL(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SSRFBlocked(f"Refusing to fetch a non-http(s) URL: {url!r}")
+    await assert_public_host(parsed.host)
+
+
 async def _guard_request(request: httpx.Request) -> None:
     """An httpx `request` event hook: fires before every request the client
     sends, including each hop of a redirect chain - so a public URL that
@@ -64,13 +82,7 @@ async def _guard_request(request: httpx.Request) -> None:
     connect a moment later) - accepted for now as a large improvement over
     no check at all, rather than building a custom transport that pins the
     resolved IP for the connection."""
-    hostname = request.url.host
-    if hostname in _BLOCKED_HOSTNAMES:
-        raise SSRFBlocked(f"Refusing to fetch a blocked host: {hostname}")
-    addresses = await asyncio.to_thread(_resolve_all_sync, hostname)
-    for addr in addresses:
-        if _is_unsafe_address(addr):
-            raise SSRFBlocked(f"Refusing to fetch a non-public address: {hostname} -> {addr}")
+    await assert_public_host(request.url.host)
 
 
 async def fetch(url: str, timeout: float = 15.0) -> FetchResult:

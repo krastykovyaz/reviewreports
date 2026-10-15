@@ -73,3 +73,61 @@ def test_unsafe_address_covers_shared_space_mapped_ipv6_and_documentation_ranges
 @pytest.mark.parametrize("addr", ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111", "::ffff:8.8.8.8"])
 def test_unsafe_address_still_allows_public_addresses_including_mapped_ones(addr):
     assert not _is_unsafe_address(addr)
+
+
+# ---- browser-side checks (assert_public_url / assert_page_is_public) ----------
+
+import pytest  # noqa: E402
+
+from src.audit import http_client  # noqa: E402
+from src.audit.browser_session import assert_page_is_public  # noqa: E402
+from src.audit.http_client import SSRFBlocked, assert_public_url  # noqa: E402
+
+
+class _FakePage:
+    def __init__(self, url):
+        self._url = url
+
+    async def get_url(self):
+        return self._url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com/x", "javascript:alert(1)", "gopher://example.com"])
+async def test_assert_public_url_rejects_non_http_schemes(url):
+    with pytest.raises(SSRFBlocked):
+        await assert_public_url(url)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8010/health", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.5/admin", "http://[::1]/"])
+async def test_assert_public_url_rejects_internal_literals(url):
+    with pytest.raises(SSRFBlocked):
+        await assert_public_url(url)
+
+
+@pytest.mark.asyncio
+async def test_assert_public_url_allows_a_public_address(monkeypatch):
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["93.184.216.34"])
+    await assert_public_url("https://example.com/")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_page_that_redirected_to_an_internal_host_is_rejected():
+    # The scenario the pre-flight httpx check cannot see: the browser was sent
+    # (by an HTTP/meta/JS redirect) somewhere other than the URL the caller gave.
+    with pytest.raises(SSRFBlocked):
+        await assert_page_is_public(_FakePage("http://127.0.0.1:8001/docs"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["", "about:blank"])
+async def test_blank_page_is_rejected(url):
+    with pytest.raises(SSRFBlocked):
+        await assert_page_is_public(_FakePage(url))
+
+
+@pytest.mark.asyncio
+async def test_public_page_is_accepted(monkeypatch):
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["93.184.216.34"])
+    await assert_page_is_public(_FakePage("https://example.com/final"))

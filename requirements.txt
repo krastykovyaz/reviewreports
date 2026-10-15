@@ -125,3 +125,5 @@ nano-vectordb>=0.0.4.3
 pylatexenc>=2.10
 mathruler>=0.1.0
 dirtyjson>=1.0.8
+# imported at package load by src/tool/workflow_tools/browser.py; was missing, so a clean install failed test collection
+browser-use==0.12.9

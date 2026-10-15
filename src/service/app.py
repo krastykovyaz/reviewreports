@@ -57,6 +57,7 @@ from src.report.schema import Report
 from src.review.generate import generate_report, supported_kinds
 from src.service.cv_store import CVStore
 from src.service.db import JobStatus, JobStore
+from src.service.input_policy import InputRejected, validate_network_input
 from src.utils import assemble_project_path
 
 _MEDIA_TYPES = {"markdown": "text/markdown", "html": "text/html", "latex": "text/x-tex", "pdf": "application/pdf"}
@@ -65,6 +66,7 @@ _BINARY_FORMATS = {"pdf"}
 
 _CV_EXTENSION_TO_FORMAT = {"html": "html", "pdf": "pdf", "md": "markdown"}
 _DEFAULT_CV_EXTRACTION_MODEL = "deepseek/deepseek-chat"
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 
 _KIND_LABEL_KEYS = {
     "website_audit": "ui.kind.website_audit",
@@ -267,6 +269,10 @@ _templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _store.init()
+    # A job still pending/running at startup belongs to a process that died: its
+    # background task is gone, so without this it stays "running" forever and the
+    # progress page refreshes indefinitely. (Assumes a single worker process.)
+    await _store.fail_unfinished("The service restarted before this job finished. Please submit it again.")
     await _cv_store.init()
     os.makedirs(_UPLOAD_DIR, exist_ok=True)
     # Without this, every LLM-dependent pillar/feature across every kind (and
@@ -339,6 +345,11 @@ async def create_report(request: CreateReportRequest, background_tasks: Backgrou
     if not _kind_allowed(request.kind):
         raise HTTPException(status_code=400, detail=f"Unsupported report kind: {request.kind}. Supported: {supported_kinds()}")
 
+    try:
+        await validate_network_input(request.kind, request.url)
+    except InputRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     lang = normalize_lang(request.lang)
     job_id = await _store.create_job(kind=request.kind, subject=request.url, lang=lang)
     background_tasks.add_task(_run_job, job_id, request.kind, request.url, _check_model(request.model_name), lang)
@@ -371,7 +382,7 @@ async def get_report_rendered(job_id: str, extension: str, footer: str = "1"):
     report = Report.model_validate(json.loads(job["report_json"]))
     try:
         rendered = await _render_in_pool(RENDERERS[output_format], report, include_footer=footer != "0")
-    except ImportError as exc:
+    except (ImportError, OSError) as exc:  # OSError: WeasyPrint without system Pango/GObject
         raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
 
     if output_format in _BINARY_FORMATS:
@@ -739,7 +750,7 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
     elif output_format == "pdf":
         try:
             rendered = await _render_in_pool(render_cv_pdf, profile, chosen_template, photo_uri)
-        except ImportError as exc:
+        except (ImportError, OSError) as exc:  # OSError: WeasyPrint without system Pango/GObject
             raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
     else:
         rendered = render_cv_markdown(profile)
@@ -812,13 +823,20 @@ async def submit(
             raise HTTPException(status_code=400, detail=f"'{kind_label}' requires a file upload")
         upload_id = uuid.uuid4().hex
         dest = os.path.join(_UPLOAD_DIR, f"{upload_id}_{os.path.basename(file.filename)}")
+        data = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"File too large (limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
         with open(dest, "wb") as f:
-            f.write(await file.read())
+            f.write(data)
         subject = dest
     else:
         if not input_value.strip():
             raise HTTPException(status_code=400, detail=f"'{kind_label}' requires a URL or path")
         subject = input_value.strip()
+        try:
+            await validate_network_input(kind, subject)
+        except InputRejected as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     job_id = await _store.create_job(kind=kind, subject=subject, lang=lang)
     background_tasks.add_task(_run_job, job_id, kind, subject, _check_model(model_name), lang)
@@ -1053,6 +1071,8 @@ async def cv_builder_submit(
     edu_year: List[str] = Form([]),
 ):
     lang = normalize_lang(lang)
+    if not name.strip() or not email.strip():
+        raise HTTPException(status_code=422, detail="Name and email are required")
 
     experience = []
     for i, title in enumerate(exp_title):

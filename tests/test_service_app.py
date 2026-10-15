@@ -5,12 +5,21 @@ from fastapi.testclient import TestClient
 
 import src.service.app as app_module
 from src.report.schema import Pillar, Report, ReportMeta
+from src.service.cv_store import CVStore
 from src.service.db import JobStore
+
+
+async def _noop_async(*args, **kwargs):
+    return None
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "_store", JobStore(db_path=str(tmp_path / "jobs.db")))
+    # Without these, every test run opened the real workdir/service/cv.db and ran the
+    # real model_manager.initialize() against the developer's .env.
+    monkeypatch.setattr(app_module, "_cv_store", CVStore(db_path=str(tmp_path / "cv.db")))
+    monkeypatch.setattr(app_module.model_manager, "initialize", _noop_async)
     # Redirect uploads to a temp dir so tests never write into the real project workdir.
     monkeypatch.setattr(app_module, "_UPLOAD_DIR", str(tmp_path / "uploads"))
     # Assert the "unrestricted" baseline explicitly rather than assume
@@ -177,11 +186,14 @@ def test_get_rendered_pdf(client, monkeypatch):
     assert resp.content == b"%PDF-1.7 fake pdf bytes"
 
 
-def test_get_rendered_pdf_unavailable_is_503(client, monkeypatch):
-    def raise_import_error(report, include_footer=True):
-        raise ImportError("cannot load library 'libgobject-2.0-0'")
+@pytest.mark.parametrize("exc_type", [ImportError, OSError])
+def test_get_rendered_pdf_unavailable_is_503(client, monkeypatch, exc_type):
+    # WeasyPrint without Pango raises OSError (from its ffi loader), not ImportError;
+    # this test used to raise ImportError and so passed while the real failure was a 500.
+    def raise_unavailable(report, include_footer=True):
+        raise exc_type("cannot load library 'libgobject-2.0-0'")
 
-    monkeypatch.setitem(app_module.RENDERERS, "pdf", raise_import_error)
+    monkeypatch.setitem(app_module.RENDERERS, "pdf", raise_unavailable)
     job_id = client.post("/reports", json={"url": "https://example.com"}).json()["id"]
     resp = client.get(f"/reports/{job_id}.pdf")
     assert resp.status_code == 503
@@ -248,7 +260,10 @@ async def test_run_job_releases_the_gate_after_finishing(client, monkeypatch):
 # these guard against as much as the restriction itself.
 
 
-def test_public_kinds_unset_leaves_every_kind_reachable(client):
+def test_public_kinds_unset_leaves_every_kind_reachable(client, monkeypatch):
+    # Reachable by KIND. (Local paths from the network are refused by the input policy unless the operator allows the
+    # directory, so this test allows /etc explicitly: it is about PUBLIC_KINDS, not about that policy.)
+    monkeypatch.setenv("REVIEW_ALLOWED_ROOTS", "/etc")
     resp = client.get("/")
     assert "code_review" in resp.text and "app_review" in resp.text
     assert client.post("/reports", json={"url": "/etc", "kind": "app_review"}).status_code == 200

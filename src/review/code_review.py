@@ -9,6 +9,7 @@ the diff, which is a follow-up, not implemented here.
 
 import asyncio
 import os
+import re
 import shutil
 import tempfile
 from collections import Counter
@@ -64,17 +65,44 @@ _M = {
 _t = make_translator(_M)
 
 
+_CLONE_TIMEOUT_S = 120
+
+
 def _is_git_url(repo: str) -> bool:
+    # A leading "-" would be parsed by git as an option, not a repository.
+    if repo.startswith("-"):
+        return False
     return repo.startswith(("http://", "https://", "git@")) or repo.endswith(".git")
 
 
 async def _clone_repo(url: str, dest: str) -> None:
+    # "--" ends option parsing so `url` can never be read as a flag; prompts are
+    # disabled so a private/unreachable repo fails instead of hanging for input;
+    # the timeout stops a slow or huge endpoint from pinning a worker forever.
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     proc = await asyncio.create_subprocess_exec(
-        "git", "clone", "--depth", "1", url, dest, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        "git", "clone", "--depth", "1", "--", url, dest,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
-    _, stderr = await proc.communicate()
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"git clone timed out after {_CLONE_TIMEOUT_S}s")
     if proc.returncode != 0:
         raise RuntimeError(f"git clone failed: {stderr.decode(errors='replace')[:500]}")
+
+
+_TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__"}
+_TEST_FILE_RE = re.compile(r"(^test_.+|.+_test\.[a-z]+$|.+\.(test|spec)\.[a-z]+$|^conftest\.py$)", re.IGNORECASE)
+
+
+def _is_test_path(rel_path: str) -> bool:
+    """Path-segment match, not substring: "latest.py", "contest/solve.py" and
+    "attestation.md" all contain "test" but are not tests."""
+    parts = rel_path.replace("\\", "/").lower().split("/")
+    return any(part in _TEST_DIRS for part in parts[:-1]) or bool(_TEST_FILE_RE.match(parts[-1]))
 
 
 def collect_repo_structure(root: str, lang: str = "en") -> Pillar:
@@ -89,7 +117,7 @@ def collect_repo_structure(root: str, lang: str = "en") -> Pillar:
     has_license = any(os.path.basename(f).lower().startswith("license") for f in files)
     findings.append(Finding(check=_t("check.license", lang), status=Status.OK if has_license else Status.WARN, detail=_t("found", lang) if has_license else _t("license.missing", lang)))
 
-    has_tests = any("test" in os.path.relpath(f, root).lower() for f in files)
+    has_tests = any(_is_test_path(os.path.relpath(f, root)) for f in files)
     findings.append(Finding(check=_t("check.tests", lang), status=Status.OK if has_tests else Status.BAD, detail=_t("tests.found", lang) if has_tests else _t("tests.missing", lang)))
 
     has_ci = any(
