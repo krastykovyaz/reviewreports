@@ -7,6 +7,7 @@ track — just the profile itself, persisted so a template/format can be
 picked or changed after submission without resending the whole profile.
 """
 
+import hashlib
 import hmac
 import json
 import os
@@ -41,6 +42,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def hash_token(token: str) -> str:
+    """What is stored for an edit token. The token is 128 random bits, so a plain SHA-256 is enough (there is nothing to
+    brute-force and no need for a slow hash): the point is that a copy of the database file - a backup, a leaked dump - no
+    longer contains working edit credentials."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+_HASH_LEN = 64  # sha256 hex; a legacy plaintext token (token_hex(16)) is 32 characters
+
+
 class CVStore:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -63,6 +74,12 @@ class CVStore:
                     await db.execute(f"ALTER TABLE cv_profiles ADD COLUMN {col} {typ}")
             # "Last changed" is what retention counts from; rows from before it existed start at their creation time.
             await db.execute("UPDATE cv_profiles SET updated_at = created_at WHERE updated_at IS NULL")
+            # Edit tokens used to be stored as issued. Hash any that still are (idempotent: a hash is 64 characters, a plaintext
+            # token 32, so a second run finds nothing). The person's copy of the token keeps working: it is hashed on verify.
+            async with db.execute("SELECT id, edit_token FROM cv_profiles WHERE edit_token IS NOT NULL AND length(edit_token) != ?", (_HASH_LEN,)) as cur:
+                legacy = [(r[0], r[1]) async for r in cur]
+            for cv_id, plain in legacy:
+                await db.execute("UPDATE cv_profiles SET edit_token = ? WHERE id = ?", (hash_token(plain), cv_id))
             await db.commit()
 
     async def create(self, profile: CVProfile, template: str) -> tuple:
@@ -70,14 +87,14 @@ class CVStore:
         never resurfaced by any GET - only the creation response includes
         it - so a CV's share link (which is just its id) grants read/render
         access but not edit access; that requires whoever created it to have
-        kept the token."""
+        kept the token. Only its hash is stored."""
         cv_id = uuid.uuid4().hex
         edit_token = secrets.token_hex(16)
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:
             await db.execute(
                 "INSERT INTO cv_profiles (id, profile_json, template, created_at, edit_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (cv_id, profile.model_dump_json(), template, now, edit_token, now),
+                (cv_id, profile.model_dump_json(), template, now, hash_token(edit_token), now),
             )
             await db.commit()
         return cv_id, edit_token
@@ -89,7 +106,7 @@ class CVStore:
         one) can never be edited - fails closed rather than treating a
         missing token as "no check needed"."""
         stored = row.get("edit_token")
-        return bool(stored and token and hmac.compare_digest(stored, token))
+        return bool(stored and token and hmac.compare_digest(stored, hash_token(token)))
 
     async def get(self, cv_id: str) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path, timeout=BUSY_TIMEOUT_SEC) as db:

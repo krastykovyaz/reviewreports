@@ -17,7 +17,8 @@
 {% if job.status in ("pending", "running") %}
 <meta http-equiv="refresh" content="2">
 {% endif %}
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+{# Pinned to the version the unpinned URL resolves to today, with an integrity hash: a moving "latest" script from a third party runs with this page's privileges and could not be verified. #}
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
 <style>
   :root {
     color-scheme: light;
@@ -102,7 +103,7 @@
       {% endif %}
     </p>
     <div class="frame-wrap">
-      <iframe id="reportFrame" title="Report"></iframe>
+      <iframe id="reportFrame" title="Report" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
       <div class="frame-toolbar">
         <button onclick="copyCurrent()">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor"/><path d="M3.5 10.5V3.5C3.5 2.94772 3.94772 2.5 4.5 2.5H10.5" stroke="currentColor" stroke-linecap="round"/></svg>
@@ -167,6 +168,11 @@
       // own toolbar at the top of the frame — push our buttons below it so
       // they don't overlap.
       document.querySelector('.frame-toolbar').classList.toggle('lower', ext === 'tex');
+
+      // Report HTML, Markdown and the prompt are static markup: no scripts, no same-origin access. Only the PDF (LaTeX tab)
+      // needs the browser's own viewer, which a sandboxed frame does not get.
+      if (ext === 'tex') frame.removeAttribute('sandbox');
+      else frame.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
 
       if (ext === 'prompt') {
         current.text = btn.dataset.prompt;

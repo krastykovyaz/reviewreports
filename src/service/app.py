@@ -24,6 +24,7 @@ templates side by side, pick one, download).
 
 import asyncio
 import hashlib
+import weakref
 import html
 import json
 import logging
@@ -40,7 +41,7 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.cv.extract import edit_cv_profile, extract_cv_profile
 from src.cv.doc_text import DocError, extract_document_text
@@ -135,7 +136,10 @@ _render_gate = asyncio.Semaphore(2)
 _RENDER_TIMEOUT_SEC = 30
 _DOC_TIMEOUT_SEC = 20          # reading an uploaded PDF/Word file
 _JOB_TIMEOUT_SEC = float(os.getenv("AUDIT_JOB_TIMEOUT_SEC", "300"))  # one audit, start to finish
-_preview_locks: dict = {}
+# One lock per (cv, label) while somebody is rendering it, and none afterwards: a WeakValueDictionary drops an entry when the last
+# coroutine using it lets go. (A manual `pop` in every caller's finally let a failing holder delete a lock that waiters were
+# still queued on, so a newcomer created a second one and two renders of the same image ran at once.)
+_preview_locks: "weakref.WeakValueDictionary" = weakref.WeakValueDictionary()
 _PREVIEW_DIR = Path(assemble_project_path("workdir/service/previews"))
 _PREVIEW_SITE = "https://tsech.online/audit"
 
@@ -189,6 +193,7 @@ async def _purge_expired(now: Optional[datetime] = None) -> dict:
         started = datetime.fromisoformat(marker.read_text().strip())
     except ValueError:
         started = now
+        marker.write_text(now.isoformat())  # repaired: left corrupt it would restart the grace period on every run, forever
     # Preview images of CVs that no longer exist (e.g. deleted while one was rendering) are always safe to drop.
     if _PREVIEW_DIR.exists():
         for f in _PREVIEW_DIR.glob("*.jpg"):
@@ -293,7 +298,14 @@ async def lifespan(app: FastAPI):
         loop_task.cancel()
 
 
-app = FastAPI(title="reviewreports", lifespan=lifespan)
+def _docs_enabled() -> bool:
+    return os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
+
+
+# /docs and /openapi.json advertise every route (including internal ones) on a public host; ENABLE_DOCS=1 turns them back on.
+app = FastAPI(title="reviewreports", lifespan=lifespan,
+              docs_url="/docs" if _docs_enabled() else None, redoc_url="/redoc" if _docs_enabled() else None,
+              openapi_url="/openapi.json" if _docs_enabled() else None)
 
 
 class CreateReportRequest(BaseModel):
@@ -669,16 +681,18 @@ def _pdf_original_page(cv_id: str, filename: str, download_label: str) -> str:
 async def get_cv_original_page(cv_id: str, lang: str = "en"):
     """The shareable page for a CV's uploaded original: a PDF in the browser's viewer, a Word file as a readable
     preview (see src/cv/docx_preview.py), either with a preview card for Telegram/WhatsApp/LinkedIn/Facebook."""
-    orig = await _cv_store.get_original(cv_id)
-    row = await _cv_store.get(cv_id)
-    if orig is None or row is None:
+    row = await _cv_store.get(cv_id)  # name and kind are on the row: the file's bytes (up to 5 MB) are only needed for a Word preview
+    if row is None or not row.get("has_original"):
         raise HTTPException(status_code=404, detail="No original file for this CV")
     lang = normalize_lang(lang)
     profile = await _cv_store.get_profile(cv_id)
     title, description = _build_cv_share_meta(profile, lang)
-    if orig["kind"] == "pdf":
-        page = _pdf_original_page(cv_id, orig["name"] or "cv.pdf", t_chrome("ui.cv.download_original", lang))
+    if row["original_kind"] == "pdf":
+        page = _pdf_original_page(cv_id, row["original_name"] or "cv.pdf", t_chrome("ui.cv.download_original", lang))
     else:
+        orig = await _cv_store.get_original(cv_id)
+        if orig is None:
+            raise HTTPException(status_code=404, detail="No original file for this CV")
         try:
             page = await _render_in_pool(docx_to_html, orig["data"])
         except HTTPException:
@@ -728,6 +742,8 @@ async def remove_cv_original(cv_id: str, x_edit_token: str = Header("")):
     if not _cv_store.verify_edit_token(row, x_edit_token):
         raise HTTPException(status_code=403, detail="Invalid or missing edit token")
     await _cv_store.set_original(cv_id, None)
+    for f in _PREVIEW_DIR.glob(f"{cv_id}.original.*.jpg"):  # its share image shows the file that was just removed
+        f.unlink(missing_ok=True)
     return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")), expires_at=_expires_from_now())
 
 
@@ -942,8 +958,10 @@ async def _cv_preview_jpeg(cv_id: str, row: dict, template: str, original: bool 
     path = _PREVIEW_DIR / f"{cv_id}.{label}.{_preview_key(row, label)}.jpg"
     if path.exists():
         return path.read_bytes()
-    lock = _preview_locks.setdefault(f"{cv_id}.{label}", asyncio.Lock())
-    try:
+    lock = _preview_locks.get(f"{cv_id}.{label}")
+    if lock is None:
+        lock = _preview_locks[f"{cv_id}.{label}"] = asyncio.Lock()
+    if True:
         async with lock:
             if path.exists():
                 return path.read_bytes()
@@ -978,8 +996,6 @@ async def _cv_preview_jpeg(cv_id: str, row: dict, template: str, original: bool 
                 if old != path:
                     old.unlink(missing_ok=True)
             return card
-    finally:
-        _preview_locks.pop(f"{cv_id}.{label}", None)
 
 
 def _prewarm_preview(cv_id: str) -> None:
@@ -1086,44 +1102,48 @@ async def cv_builder_submit(
     if not name.strip() or not email.strip():
         raise HTTPException(status_code=422, detail="Name and email are required")
 
-    experience = []
-    for i, title in enumerate(exp_title):
-        if not title.strip():
-            continue
-        bullets = [b.strip() for b in exp_bullets[i].splitlines() if b.strip()] if i < len(exp_bullets) else []
-        experience.append(
-            Experience(
-                title=title.strip(),
-                organization=exp_organization[i].strip() if i < len(exp_organization) else "",
-                location=(exp_location[i].strip() or None) if i < len(exp_location) else None,
-                start=exp_start[i].strip() if i < len(exp_start) else "",
-                end=(exp_end[i].strip() or "Present") if i < len(exp_end) else "Present",
-                bullets=bullets,
+    try:
+        experience = []
+        for i, title in enumerate(exp_title):
+            if not title.strip():
+                continue
+            bullets = [b.strip() for b in exp_bullets[i].splitlines() if b.strip()] if i < len(exp_bullets) else []
+            experience.append(
+                Experience(
+                    title=title.strip(),
+                    organization=exp_organization[i].strip() if i < len(exp_organization) else "",
+                    location=(exp_location[i].strip() or None) if i < len(exp_location) else None,
+                    start=exp_start[i].strip() if i < len(exp_start) else "",
+                    end=(exp_end[i].strip() or "Present") if i < len(exp_end) else "Present",
+                    bullets=bullets,
+                )
             )
-        )
 
-    education = []
-    for i, degree in enumerate(edu_degree):
-        if not degree.strip():
-            continue
-        education.append(
-            Education(
-                degree=degree.strip(),
-                institution=edu_institution[i].strip() if i < len(edu_institution) else "",
-                year=(edu_year[i].strip() or None) if i < len(edu_year) else None,
+        education = []
+        for i, degree in enumerate(edu_degree):
+            if not degree.strip():
+                continue
+            education.append(
+                Education(
+                    degree=degree.strip(),
+                    institution=edu_institution[i].strip() if i < len(edu_institution) else "",
+                    year=(edu_year[i].strip() or None) if i < len(edu_year) else None,
+                )
             )
-        )
 
-    profile = CVProfile(
-        name=name.strip(),
-        role=role.strip() or None,
-        summary=summary.strip() or None,
-        contact=Contact(email=email.strip(), phone=phone.strip() or None, location=location.strip() or None, links=_split_csv(links)),
-        experience=experience,
-        education=education,
-        skills=_split_csv(skills),
-        languages=_split_csv(languages),
-    )
+        profile = CVProfile(
+            name=name.strip(),
+            role=role.strip() or None,
+            summary=summary.strip() or None,
+            contact=Contact(email=email.strip(), phone=phone.strip() or None, location=location.strip() or None, links=_split_csv(links)),
+            experience=experience,
+            education=education,
+            skills=_split_csv(skills),
+            languages=_split_csv(languages),
+        )
+    except ValidationError as exc:
+        # A field over its length limit, a bad value, or a profile over the total cap is the sender's mistake: a 422, not a 500.
+        raise HTTPException(status_code=422, detail=[{"loc": [str(x) for x in e["loc"]], "msg": e["msg"]} for e in exc.errors()])
 
     # The web form has no "describe changes" UI, so the edit token is simply
     # never surfaced anywhere for a CV created this way - same fail-closed
