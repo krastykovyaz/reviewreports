@@ -12,7 +12,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from src.cv.doc_text import MAX_XML_BYTES
+from src.cv.doc_text import MAX_XML_TOTAL_BYTES, read_part, word_parts
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_BLOCKS = 3000
@@ -115,12 +115,8 @@ _CSS = """
 
 def docx_to_html(raw: bytes) -> str:
     zf = zipfile.ZipFile(io.BytesIO(raw))
-    names = {i.filename: i for i in zf.infolist()}
-    parts = sorted(n for n in names if re.fullmatch(r"word/header\d*\.xml", n)) + ["word/document.xml"] \
-        + sorted(n for n in names if re.fullmatch(r"word/footer\d*\.xml", n))
     blocks = []
-    for n in parts:
-        if n not in names or names[n].file_size > MAX_XML_BYTES:
-            continue
-        blocks += _blocks(ET.fromstring(zf.read(n)))
+    budget = [MAX_XML_TOTAL_BYTES]
+    for info in word_parts(zf):
+        blocks += _blocks(ET.fromstring(read_part(zf, info, budget)))
     return f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Original</title><style>{_CSS}</style></head><body><div class="page">{"".join(blocks)}</div></body></html>'

@@ -10,7 +10,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
-from src.audit.browser_session import audit_page
+from src.audit.browser_session import audit_page, ensure_public_url
 from src.audit.collectors.accessibility import collect_accessibility
 from src.audit.collectors.content import collect_content
 from src.audit.collectors.links import collect_broken_links
@@ -118,6 +118,8 @@ async def run_website_audit(url: str, model_name: Optional[str] = None, lang: st
 
     async with audit_page(homepage.url) as page:
         facts: Dict[str, Any] = await gather_page_facts(page)
+        # A redirect/refresh/script that fired after load (or only for a browser) may have left the page somewhere internal.
+        await ensure_public_url(str(facts.get("url") or ""))
         ux = await collect_ux(page, model_name=model_name, lang=lang)
 
     pillars: List[Pillar] = [

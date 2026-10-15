@@ -198,3 +198,83 @@ def test_the_created_cv_is_the_same_kind_of_object_as_any_other(client):
     d = _post(client, _docx(_CV_LINES)).json()
     assert client.get(f"/cv/{d['id']}.pdf").content.startswith(b"%PDF")
     assert client.post(f"/cv/{d['id']}/edit", json={"instructions": "x", "edit_token": "wrong"}).status_code == 403
+
+
+# ── a zip header's declared size is not trusted ───────────────────
+
+def _lying_docx(inflated_bytes: int, declared: int = 1000) -> bytes:
+    """A .docx whose document.xml really inflates to `inflated_bytes` but whose headers claim `declared`."""
+    import re
+    import struct
+    body = b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' + \
+           b"<w:p><w:r><w:t>A</w:t></w:r></w:p>" * (inflated_bytes // 34) + b"</w:body></w:document>"
+    b = BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", body)
+    buf = bytearray(b.getvalue())
+    for m in re.finditer(re.escape(b"word/document.xml"), bytes(buf)):
+        for hdr_len, size_off in ((30, 22), (46, 24)):  # local header / central directory: uncompressed-size field
+            h = m.start() - hdr_len
+            if h >= 0 and bytes(buf[h:h + 4]) in (b"PK\x03\x04", b"PK\x01\x02"):
+                buf[h + size_off:h + size_off + 4] = struct.pack("<I", declared)
+    return bytes(buf)
+
+
+def _peak_rss_mb_of(code: str) -> int:
+    import subprocess, sys
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=".")
+    return int(out.stdout.strip().splitlines()[-1])
+
+
+def test_a_member_that_inflates_far_beyond_its_declared_size_is_rejected():
+    raw = _lying_docx(30 * 1024 * 1024)  # ~30MB of XML claiming to be 1000 bytes
+    with pytest.raises(DocError) as e:
+        extract_document_text(raw)
+    assert e.value.code == "unreadable"
+
+
+def test_the_lying_member_does_not_cost_its_inflated_size_in_memory(tmp_path):
+    """Measured in a child process so imports and the test runner don't muddy the number."""
+    f = tmp_path / "liar.docx"; f.write_bytes(_lying_docx(120 * 1024 * 1024))
+    code = (
+        "import resource, sys; sys.path.insert(0, '.'); "
+        "from src.cv import doc_text; "
+        "rss = lambda: resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024; base = rss(); "
+        f"raw = open(r'{f}', 'rb').read(); "
+        "\ntry: doc_text.extract_document_text(raw)\nexcept Exception: pass\n"
+        "print(rss() - base)"
+    )
+    assert _peak_rss_mb_of(code) < 60  # unbounded this was ~260MB for a 136MB member
+
+
+def test_the_preview_path_is_bounded_the_same_way():
+    from src.cv.docx_preview import docx_to_html
+    with pytest.raises(Exception):
+        docx_to_html(_lying_docx(30 * 1024 * 1024))
+
+
+def test_too_many_header_and_footer_parts_is_refused():
+    b = BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("word/document.xml", f'<w:document {_NS}><w:body>{_p("x" * 100)}</w:body></w:document>')
+        for i in range(doc_text.MAX_EXTRA_PARTS + 1):
+            z.writestr(f"word/header{i}.xml", f"<w:hdr {_NS}>{_p('h')}</w:hdr>")
+    with pytest.raises(DocError) as e:
+        extract_document_text(b.getvalue())
+    assert e.value.code == "unreadable"
+
+
+def test_the_whole_file_shares_one_inflate_budget(monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_XML_TOTAL_BYTES", 600)
+    b = BytesIO()
+    big = f"<w:hdr {_NS}>" + _p("h" * 200) + "</w:hdr>"
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("word/header1.xml", big); z.writestr("word/header2.xml", big)
+        z.writestr("word/document.xml", f'<w:document {_NS}><w:body>{_p("x" * 100)}</w:body></w:document>')
+    with pytest.raises(DocError):
+        extract_document_text(b.getvalue())  # each part is small, together they exceed the budget
+
+
+def test_ordinary_documents_with_headers_and_footers_still_read_fine():
+    text = extract_document_text(_docx(_CV_LINES, header=["jordan.reyes@email.com | +1 415 555 0142"], footer=["San Francisco"]))
+    assert "jordan.reyes@email.com" in text and "San Francisco" in text and "Northwind Systems" in text

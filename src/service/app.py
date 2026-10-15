@@ -127,6 +127,10 @@ _pdf_gate = asyncio.Semaphore(2)
 # Rendering a link-preview image (CV -> PDF -> PNG -> card) is the heaviest request a crawler can trigger:
 # one at a time, waiting its turn briefly rather than rejecting (a crawler that is refused may not retry).
 _preview_gate = asyncio.Semaphore(1)
+# PDF layout (WeasyPrint) is CPU-bound and takes seconds for a long document: it runs in a thread, at most two at a time,
+# and never on the event loop (a synchronous render froze every request - /health included - while it ran).
+_render_gate = asyncio.Semaphore(2)
+_RENDER_TIMEOUT_SEC = 30
 _preview_locks: dict = {}
 _PREVIEW_DIR = Path(assemble_project_path("workdir/service/previews"))
 _PREVIEW_SITE = "https://tsech.online/audit"
@@ -215,6 +219,37 @@ async def _retention_loop():
 
 class ServerBusy(Exception):
     pass
+
+
+async def _render_in_pool(fn, *args, **kwargs):
+    """Runs a CPU-heavy render in a thread under _render_gate with a timeout. A thread can't be cancelled, so on
+    timeout the caller gets a 503 straight away but the gate is only released when the thread actually finishes -
+    timed-out renders can't pile up beyond the gate's size."""
+    try:
+        await asyncio.wait_for(_render_gate.acquire(), timeout=10)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+    fut.add_done_callback(lambda _f: _render_gate.release())
+    try:
+        return await asyncio.wait_for(asyncio.shield(fut), timeout=_RENDER_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Rendering took too long")
+
+
+# Only the default model is selectable on public routes: a caller-chosen model_name lets anyone pick the most
+# expensive one (deepseek-reasoner) on every request. PUBLIC_MODELS (comma-separated) widens the list deliberately.
+def _allowed_models() -> set:
+    extra = {m.strip() for m in os.getenv("PUBLIC_MODELS", "").split(",") if m.strip()}
+    return {_DEFAULT_CV_EXTRACTION_MODEL} | extra
+
+
+def _check_model(requested: Optional[str]) -> Optional[str]:
+    name = (requested or "").strip()
+    if name and name not in _allowed_models():
+        raise HTTPException(status_code=400, detail="That model is not available here")
+    return name or None
 
 
 async def _acquire_or_reject(gate: asyncio.Semaphore) -> None:
@@ -306,7 +341,7 @@ async def create_report(request: CreateReportRequest, background_tasks: Backgrou
 
     lang = normalize_lang(request.lang)
     job_id = await _store.create_job(kind=request.kind, subject=request.url, lang=lang)
-    background_tasks.add_task(_run_job, job_id, request.kind, request.url, request.model_name, lang)
+    background_tasks.add_task(_run_job, job_id, request.kind, request.url, _check_model(request.model_name), lang)
     job = await _store.get_job(job_id)
     return _job_response(job)
 
@@ -335,7 +370,7 @@ async def get_report_rendered(job_id: str, extension: str, footer: str = "1"):
 
     report = Report.model_validate(json.loads(job["report_json"]))
     try:
-        rendered = RENDERERS[output_format](report, include_footer=footer != "0")
+        rendered = await _render_in_pool(RENDERERS[output_format], report, include_footer=footer != "0")
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
 
@@ -431,7 +466,7 @@ async def create_cv_from_text(request: CreateCVFromTextRequest):
     except ServerBusy:
         raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
     try:
-        profile = await extract_cv_profile(text, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+        profile = await extract_cv_profile(text, _check_model(request.model_name) or _DEFAULT_CV_EXTRACTION_MODEL)
     finally:
         _llm_gate.release()
     if profile is None:
@@ -484,7 +519,7 @@ async def create_cv_from_file(
     except ServerBusy:
         raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
     try:
-        profile = await extract_cv_profile(text, model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+        profile = await extract_cv_profile(text, _check_model(model_name) or _DEFAULT_CV_EXTRACTION_MODEL)
     finally:
         _llm_gate.release()
     if profile is None:
@@ -531,7 +566,7 @@ async def edit_cv(cv_id: str, request: EditCVRequest):
         raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
     try:
         current = await _cv_store.get_profile(cv_id)
-        revised = await edit_cv_profile(current, instructions, request.model_name or _DEFAULT_CV_EXTRACTION_MODEL)
+        revised = await edit_cv_profile(current, instructions, _check_model(request.model_name) or _DEFAULT_CV_EXTRACTION_MODEL)
     finally:
         _llm_gate.release()
     if revised is None:
@@ -703,7 +738,7 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
                                    image=f"{_PREVIEW_SITE}/cv/{cv_id}/preview.jpg?template={chosen_template}")
     elif output_format == "pdf":
         try:
-            rendered = render_cv_pdf(profile, chosen_template, photo_uri)
+            rendered = await _render_in_pool(render_cv_pdf, profile, chosen_template, photo_uri)
         except ImportError as exc:
             raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
     else:
@@ -786,7 +821,7 @@ async def submit(
         subject = input_value.strip()
 
     job_id = await _store.create_job(kind=kind, subject=subject, lang=lang)
-    background_tasks.add_task(_run_job, job_id, kind, subject, model_name.strip() or None, lang)
+    background_tasks.add_task(_run_job, job_id, kind, subject, _check_model(model_name), lang)
     return RedirectResponse(url=f"/view/{job_id}", status_code=303)
 
 
@@ -898,7 +933,7 @@ async def _cv_preview_jpeg(cv_id: str, row: dict, template: str, original: bool 
                             png = None  # an unrenderable upload still gets a card: our own render of the CV
                 if png is None:
                     photo = await _cv_store.get_photo(cv_id) if row.get("has_photo") else None
-                    pdf = await asyncio.to_thread(render_cv_pdf, profile, template, to_data_uri(photo) if photo else None)
+                    pdf = await _render_in_pool(render_cv_pdf, profile, template, to_data_uri(photo) if photo else None)
                     png = await asyncio.to_thread(rasterize_first_page, pdf)
                 card = await asyncio.to_thread(compose_card, png, profile.name, profile.role or None)
             except RasterError:
@@ -974,9 +1009,18 @@ async def cv_builder_form(request: Request, lang: str = "en"):
 
 
 @app.post("/cv-builder/from-text", response_class=HTMLResponse)
-async def cv_builder_from_text(request: Request, text: str = Form(...), model_name: str = Form(""), lang: str = Form("en")):
+async def cv_builder_from_text(request: Request, text: str = Form(..., max_length=20_000), model_name: str = Form(""), lang: str = Form("en")):
     lang = normalize_lang(lang)
-    profile = await extract_cv_profile(text.strip(), model_name.strip() or _DEFAULT_CV_EXTRACTION_MODEL)
+    chosen_model = _check_model(model_name)
+    # The same ceiling as /cv/from-text: this route used to call the model with no size cap and outside the concurrency gate.
+    try:
+        await _acquire_or_reject(_llm_gate)
+    except ServerBusy:
+        raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
+    try:
+        profile = await extract_cv_profile(text.strip(), chosen_model or _DEFAULT_CV_EXTRACTION_MODEL)
+    finally:
+        _llm_gate.release()
     if profile is None:
         return _render_cv_builder_form(request, lang, extract_error=t_chrome("ui.cv.extract_failed", lang), pasted_text=text, status_code=422)
     return _render_cv_builder_form(request, lang, profile=profile)

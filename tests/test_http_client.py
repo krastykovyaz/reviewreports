@@ -60,3 +60,16 @@ async def test_try_fetch_returns_none_for_a_blocked_host_instead_of_raising():
     # fetches, which already tolerate a plain connection failure as None -
     # a blocked host should look the same to those callers, not crash them.
     assert await try_fetch("http://127.0.0.1:1/") is None
+
+
+# ── beyond the basic ranges ───────────────────────────────────────
+
+@pytest.mark.parametrize("addr", ["100.64.0.1", "100.127.255.254", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:169.254.169.254",
+                                  "fe80::1%eth0", "192.0.2.1", "198.51.100.7", "203.0.113.9", "240.0.0.1", "ff02::1"])
+def test_unsafe_address_covers_shared_space_mapped_ipv6_and_documentation_ranges(addr):
+    assert _is_unsafe_address(addr)
+
+
+@pytest.mark.parametrize("addr", ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111", "::ffff:8.8.8.8"])
+def test_unsafe_address_still_allows_public_addresses_including_mapped_ones(addr):
+    assert not _is_unsafe_address(addr)

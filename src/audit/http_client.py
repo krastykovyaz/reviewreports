@@ -40,10 +40,16 @@ def _resolve_all_sync(hostname: str) -> List[str]:
 
 
 def _is_unsafe_address(raw_ip: str) -> bool:
-    ip = ipaddress.ip_address(raw_ip)
+    ip = ipaddress.ip_address(raw_ip.split("%")[0])  # drop an IPv6 zone id (fe80::1%eth0)
+    # An IPv4 address written as IPv6 (::ffff:10.0.0.1) must be judged as the IPv4 address it really is.
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     return (
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        # Anything not globally routable: also shared address space 100.64.0.0/10 (carrier-grade NAT, which is how some
+        # clouds number internal hosts), documentation ranges, 192.0.0.0/24 ...
+        or not ip.is_global
     )
 
 

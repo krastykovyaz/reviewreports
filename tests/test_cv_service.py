@@ -333,14 +333,24 @@ def test_from_text_prefills_manual_form_on_success(client, monkeypatch):
     assert "review and correct" in resp.text.lower() or "Extracted from your text" in resp.text
 
 
-def test_from_text_uses_provided_model_name(client, monkeypatch):
+def test_a_model_name_is_only_honoured_when_it_is_on_the_public_allowlist(client, monkeypatch):
+    seen = []
+
     async def fake_extract(text, model_name):
-        assert model_name == "openai/gpt-4o"
+        seen.append(model_name)
         return CVProfile(name="Alex Kim", contact=Contact(email="alex@example.com"))
 
     monkeypatch.setattr(app_module, "extract_cv_profile", fake_extract)
-    resp = client.post("/cv-builder/from-text", data={"text": "some bio", "model_name": "openai/gpt-4o"})
-    assert resp.status_code == 200
+    # Not allowlisted: refused, and the model is never called (a public caller must not pick the expensive one).
+    assert client.post("/cv-builder/from-text", data={"text": "some bio", "model_name": "deepseek/deepseek-reasoner"}).status_code == 400
+    assert seen == []
+    # Allowlisted deliberately via PUBLIC_MODELS: passed through.
+    monkeypatch.setenv("PUBLIC_MODELS", "openai/gpt-4o")
+    assert client.post("/cv-builder/from-text", data={"text": "some bio", "model_name": "openai/gpt-4o"}).status_code == 200
+    assert seen == ["openai/gpt-4o"]
+    # No model_name: the default.
+    assert client.post("/cv-builder/from-text", data={"text": "some bio"}).status_code == 200
+    assert seen[-1] == app_module._DEFAULT_CV_EXTRACTION_MODEL
 
 
 def test_from_text_shows_error_on_extraction_failure(client, monkeypatch):
@@ -378,6 +388,7 @@ def test_cv_from_text_json_creates_and_stores(client, monkeypatch):
 
 
 def test_cv_from_text_json_forwards_model_and_template(client, monkeypatch):
+    monkeypatch.setenv("PUBLIC_MODELS", "openai/gpt-4o")  # a model only reaches the call if it is on the public allowlist
     async def fake_extract(text, model_name):
         assert model_name == "openai/gpt-4o"
         return CVProfile(name="Alex Kim", contact=Contact(email="alex@example.com"))
@@ -440,6 +451,7 @@ def test_edit_cv_applies_change_and_keeps_id_and_template(client, monkeypatch):
 
 
 def test_edit_cv_forwards_model_name(client, monkeypatch):
+    monkeypatch.setenv("PUBLIC_MODELS", "openai/gpt-4o")
     created = client.post("/cv", json=_SAMPLE_PAYLOAD).json()
 
     async def fake_edit(current, instructions, model_name):

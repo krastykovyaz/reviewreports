@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 import httpx
 
+from src.audit.http_client import SSRFBlocked, _guard_request
 from src.i18n import normalize_lang, pillar_name
 from src.i18n.core import make_translator
 from src.report.schema import Finding, Pillar, Status
@@ -31,6 +32,9 @@ _M = {
 _t = make_translator(_M)
 
 
+_BLOCKED = "blocked"
+
+
 async def _check(client: httpx.AsyncClient, href: str, sem: asyncio.Semaphore):
     async with sem:
         try:
@@ -38,6 +42,10 @@ async def _check(client: httpx.AsyncClient, href: str, sem: asyncio.Semaphore):
             if resp.status_code >= 400 or resp.status_code == 405:
                 resp = await client.get(href)  # some servers reject HEAD
             return href, resp.status_code, None
+        except SSRFBlocked:
+            # The link points at a non-public address (or redirects there): it is never requested, and it is not
+            # reported either - a published "href -> status" line for an internal URL would be a port/path oracle.
+            return href, None, _BLOCKED
         except httpx.HTTPError as exc:
             return href, None, type(exc).__name__
 
@@ -57,8 +65,16 @@ async def collect_broken_links(facts: Dict[str, Any], max_check: int = 25, lang:
     ]
 
     sem = asyncio.Semaphore(8)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0, headers={"User-Agent": "reviewreports-linkcheck/1.0"}) as client:
+    # Every hop (including redirects) goes through the same SSRF guard as the page fetch: the hrefs come from the
+    # audited site, i.e. from the caller.
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0, headers={"User-Agent": "reviewreports-linkcheck/1.0"},
+                                 event_hooks={"request": [_guard_request]}) as client:
         results = await asyncio.gather(*(_check(client, href, sem) for href in unique))
+    results = [r for r in results if r[2] != _BLOCKED]
+    unique = [r[0] for r in results]
+    if not unique:
+        findings.append(Finding(check=_t("check.broken_links", lang), status=Status.NA, detail=_t("none_found", lang)))
+        return Pillar(name=pillar_name("Links", lang), score=None, summary=_t("none_found", lang), findings=findings)
 
     broken = [(h, code, err) for h, code, err in results if code is None or code >= 400]
     if broken:

@@ -6,6 +6,10 @@ plumbing, since a URL scan is a deterministic pipeline, not an agent task.
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
+from urllib.parse import urlparse
+
+from src.audit.http_client import SSRFBlocked, _BLOCKED_HOSTNAMES, _is_unsafe_address, _resolve_all_sync
+from src.audit.js_eval import eval_json
 from src.environment.browser import Browser
 from src.environment.browser.browser.profile import BrowserProfile
 
@@ -31,6 +35,26 @@ def _installed_chromium_path() -> Optional[str]:
         if Path(path).is_file():
             return path
     return None
+
+
+async def ensure_public_url(raw_url: str) -> None:
+    """Raises SSRFBlocked unless raw_url is http(s) on a host that resolves only to public addresses.
+
+    The page fetch is guarded, but Chromium then makes its own requests: a site can answer a browser with a redirect,
+    a <meta http-equiv=refresh> or a script that lands on http://127.0.0.1:8001/... and the facts gathered from that page
+    (title, headings, links, 20 000 characters of text) would be published in the public report. So where the browser
+    ENDED UP is checked too, before anything is read from it. (The request itself has still been made by then; what
+    this prevents is the content coming back out.)"""
+    import asyncio
+
+    parsed = urlparse(raw_url or "")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise SSRFBlocked(f"Refusing a non-http(s) page: {raw_url[:80]!r}")
+    if parsed.hostname in _BLOCKED_HOSTNAMES:
+        raise SSRFBlocked(f"Refusing a blocked host: {parsed.hostname}")
+    for addr in await asyncio.to_thread(_resolve_all_sync, parsed.hostname):
+        if _is_unsafe_address(addr):
+            raise SSRFBlocked(f"Refusing a non-public address: {parsed.hostname} -> {addr}")
 
 
 @asynccontextmanager
@@ -61,7 +85,9 @@ async def audit_page(url: str, headless: bool = True) -> AsyncIterator:
     await browser.start()
     try:
         page = await browser.get_current_page()
+        await ensure_public_url(url)
         await page.goto(url)
+        await ensure_public_url(str(await eval_json(page, "location.href")))
         yield page
     finally:
         await browser.stop()

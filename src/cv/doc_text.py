@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 from src.cv.pdf_text import MAX_CHARS, MIN_CHARS, PdfError, extract_pdf_text
 
 MAX_XML_BYTES = 10 * 1024 * 1024   # inflated size of any one part we read
+MAX_XML_TOTAL_BYTES = 16 * 1024 * 1024  # ... and of all the parts of one file together
+MAX_EXTRA_PARTS = 6                # header/footer parts read besides the body
 MAX_ZIP_ENTRIES = 500
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # legacy .doc, and password-protected .docx
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -24,6 +26,35 @@ class DocError(ValueError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def read_part(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list) -> bytes:
+    """Inflates a zip member WITHOUT trusting the size its header declares.
+
+    A header can claim 1 KB for a member that really inflates to hundreds of MB; a plain zf.read() inflates before
+    anything is checked (measured: a 395 KB upload cost ~260 MB of memory before being rejected). Here the member is
+    read through a bounded reader that stops one byte past the allowance (the smaller of the per-part cap and what is
+    left of the whole file's budget), so the cost is bounded by the caps whatever the header says.
+    `budget` is a one-element list holding the bytes still allowed for this file."""
+    allow = min(MAX_XML_BYTES, budget[0])
+    with zf.open(info) as f:
+        data = f.read(allow + 1)
+    if len(data) > allow:
+        raise DocError("unreadable")
+    budget[0] -= len(data)
+    return data
+
+
+def word_parts(zf: zipfile.ZipFile) -> list:
+    """The members worth reading, in reading order: headers, body, footers - with the header/footer count capped."""
+    names = {i.filename: i for i in zf.infolist()}
+    if "word/document.xml" not in names:
+        raise DocError("unsupported")  # a zip, but not a Word document
+    heads = sorted(n for n in names if re.fullmatch(r"word/header\d*\.xml", n))
+    foots = sorted(n for n in names if re.fullmatch(r"word/footer\d*\.xml", n))
+    if len(heads) + len(foots) > MAX_EXTRA_PARTS:
+        raise DocError("unreadable")
+    return [names[n] for n in heads + ["word/document.xml"] + foots]
 
 
 def _paragraph_lines(xml_bytes: bytes) -> list:
@@ -53,18 +84,13 @@ def _docx_text(raw: bytes) -> str:
     infos = zf.infolist()
     if len(infos) > MAX_ZIP_ENTRIES:
         raise DocError("unreadable")
-    names = {i.filename: i for i in infos}
-    if "word/document.xml" not in names:
-        raise DocError("unsupported")  # a zip, but not a Word document
     # Contact details often sit in the page header/footer, so read those too (header first).
-    wanted = sorted(n for n in names if re.fullmatch(r"word/header\d*\.xml", n))
-    wanted += ["word/document.xml"] + sorted(n for n in names if re.fullmatch(r"word/footer\d*\.xml", n))
+    parts = word_parts(zf)
+    budget = [MAX_XML_TOTAL_BYTES]
     lines = []
     try:
-        for n in wanted:
-            if names[n].file_size > MAX_XML_BYTES:
-                raise DocError("unreadable")
-            lines += _paragraph_lines(zf.read(n))
+        for info in parts:
+            lines += _paragraph_lines(read_part(zf, info, budget))
     except DocError:
         raise
     except Exception:

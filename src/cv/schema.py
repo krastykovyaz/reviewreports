@@ -8,7 +8,7 @@ generating a new one. No overlap in fields or intent.
 
 from typing import Annotated, List, Optional
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 # POST /cv (unlike /cv/from-text and /cv/{id}/edit) never touches an LLM, so
 # there's no per-request cost to bound - these exist for the same reason as
@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, StringConstraints
 # unbounded row in a database that's never cleaned up (see the validation
 # report's PII-retention finding) and an unbounded render target. Limits are
 # generous for anything a real CV would ever contain.
+MAX_PROFILE_CHARS = 60_000
 _Short = Annotated[str, StringConstraints(max_length=200)]
 _Long = Annotated[str, StringConstraints(max_length=5000)]
 
@@ -51,3 +52,12 @@ class CVProfile(BaseModel):
     education: List[Education] = Field(default_factory=list, max_length=50)
     skills: List[_Short] = Field(default_factory=list, max_length=100)
     languages: List[_Short] = Field(default_factory=list, max_length=50, description="e.g. 'English (native)'")
+
+    @model_validator(mode="after")
+    def _bounded_in_total(self):
+        """Each field is capped, but 50 jobs x 50 bullets x 5000 characters is still ~12M characters that WeasyPrint
+        would spend a minute laying out (it measured 12.8 s for 180 KB) on a request needing no token or LLM call.
+        A real CV is a few thousand characters; the largest stored here is ~2,000."""
+        if len(self.model_dump_json()) > MAX_PROFILE_CHARS:
+            raise ValueError(f"profile is too long (over {MAX_PROFILE_CHARS} characters in total)")
+        return self
