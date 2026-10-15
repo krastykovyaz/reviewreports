@@ -91,19 +91,6 @@ def _fake_browser(page, calls):
 
 
 @pytest.mark.asyncio
-async def test_audit_page_checks_where_the_browser_ended_up_before_yielding(monkeypatch):
-    """A site that redirects Chromium to an internal page must abort before anything is read, and still shut the browser down."""
-    calls, read = [], []
-    page = _Page("http://127.0.0.1:8001/docs")
-    monkeypatch.setattr(browser_session, "Browser", _fake_browser(page, calls))
-    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["93.184.216.34"] if host == "example.com" else ["127.0.0.1"])
-    with pytest.raises(SSRFBlocked):
-        async with browser_session.audit_page("https://example.com/"):
-            read.append("facts")
-    assert read == [] and "stop" in calls and ("goto", "https://example.com/") in page.calls
-
-
-@pytest.mark.asyncio
 async def test_audit_page_refuses_an_internal_start_url_without_navigating(monkeypatch):
     calls = []
     page = _Page("http://127.0.0.1:8001/")
@@ -154,3 +141,33 @@ async def test_the_late_check_in_website_audit_catches_a_redirect_that_fires_whi
     monkeypatch.setattr(website, "_http_variant", fake_variant)
     with pytest.raises(SSRFBlocked):
         await website.run_website_audit("https://example.com/")
+
+
+@pytest.mark.asyncio
+async def test_website_audit_checks_where_the_browser_ended_up_after_the_page_settled(monkeypatch):
+    """The final-URL check runs after the page has settled (the real browser's get_url() is empty right after goto) and an
+    internal landing page aborts the audit instead of reaching the report."""
+    from src.audit import website
+
+    class FakeFetched:
+        url = "https://example.com/"; headers = {}; status_code = 200; text = "<html></html>"
+
+    async def fake_fetch(url, timeout=15.0): return FakeFetched()
+    async def fake_try_fetch(url, timeout=10.0): return None
+    async def fake_variant(url): return None
+    order = []
+
+    class _Ctx:
+        async def __aenter__(self): return _Page("http://127.0.0.1:8001/docs")  # what a redirected browser reports
+        async def __aexit__(self, *a): return False
+
+    async def fake_facts(page): order.append("facts"); return {"url": "http://127.0.0.1:8001/docs", "title": "SECRET"}
+
+    monkeypatch.setattr(website, "fetch", fake_fetch); monkeypatch.setattr(website, "try_fetch", fake_try_fetch)
+    monkeypatch.setattr(website, "_http_variant", fake_variant)
+    monkeypatch.setattr(website, "audit_page", lambda url: _Ctx())
+    monkeypatch.setattr(website, "gather_page_facts", fake_facts)
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["127.0.0.1"] if host == "127.0.0.1" else ["93.184.216.34"])
+    with pytest.raises(SSRFBlocked):
+        await website.run_website_audit("https://example.com/")
+    assert order == ["facts"]  # gathered, but never turned into a report

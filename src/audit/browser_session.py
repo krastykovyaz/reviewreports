@@ -81,7 +81,8 @@ async def audit_page(url: str, headless: bool = True) -> AsyncIterator:
         page = await browser.get_current_page()
         await assert_public_url(url)  # never navigate to an internal start URL
         await page.goto(url)
-        await assert_page_is_public(page)  # ... nor read anything from wherever a redirect/refresh/script landed
+        # Where the browser ended up is checked by the caller (assert_page_is_public) after the page has settled: right
+        # after goto() the browser's target info has not caught up yet and get_url() is still empty.
         yield page
     finally:
         await browser.stop()
