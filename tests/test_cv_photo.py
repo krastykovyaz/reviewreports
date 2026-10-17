@@ -99,6 +99,53 @@ def test_pixel_bomb_is_rejected_before_decoding():
         process_cv_photo(b.getvalue())
 
 
+def test_the_pixel_limit_is_16_megapixels():
+    assert photo_mod.MAX_PIXELS == 16_000_000
+    b = BytesIO(); Image.new("L", (4001, 4000), 0).save(b, "PNG")  # one row over; a tiny file
+    with pytest.raises(ValueError):
+        process_cv_photo(b.getvalue())
+    b = BytesIO(); Image.new("L", (4000, 4000), 0).save(b, "PNG")
+    assert _open(process_cv_photo(b.getvalue())).size == (photo_mod.SIZE, photo_mod.SIZE)
+
+
+@pytest.mark.parametrize("orientation", range(2, 9))
+def test_orientation_is_baked_in_the_same_way_as_exif_transpose_does_it(orientation):
+    from PIL import ImageDraw, ImageOps
+    im = Image.new("RGB", (2400, 1600), (255, 255, 255))
+    ImageDraw.Draw(im).rectangle((0, 0, 700, 500), fill=(255, 0, 0))  # a marker in one corner shows where the picture ended up
+    exif = Image.Exif(); exif[0x0112] = orientation
+    b = BytesIO(); im.save(b, "JPEG", exif=exif); raw = b.getvalue()  # 2400x1600: reduced by the JPEG decoder on the way in
+    expect = ImageOps.fit(ImageOps.exif_transpose(Image.open(BytesIO(raw))), (photo_mod.SIZE, photo_mod.SIZE), Image.LANCZOS, centering=(0.5, 0.4))
+    got = _open(process_cv_photo(raw)).convert("RGB")
+    for xy in ((20, 20), (460, 20), (20, 460), (460, 460)):
+        assert abs(got.getpixel(xy)[1] - expect.convert("RGB").getpixel(xy)[1]) < 40, (orientation, xy)  # red corner or white corner, same as the reference
+
+
+_PEAK = r"""
+import re, sys
+sys.path.insert(0, ".")
+raw = sys.stdin.buffer.read()
+from src.cv.photo import process_cv_photo
+process_cv_photo(raw)
+# VmHWM, not getrusage: ru_maxrss of a child starts at its parent's size (this test process is big) and would hide the difference
+print(int(re.search(r"VmHWM:\s+(\d+) kB", open("/proc/self/status").read()).group(1)) // 1024)
+"""
+
+
+@pytest.mark.parametrize("mode,fmt,ceiling_mb", [
+    ("RGBA", "PNG", 180),   # the largest picture allowed; the old pipeline peaked at ~260 MB on it (a 6300x6300 one: ~620 MB)
+    ("RGB", "JPEG", 70),    # the decoder scales a JPEG down while reading it: ~28 MB; the old pipeline decoded all 16 MP (~140 MB)
+])
+def test_the_largest_allowed_picture_does_not_balloon_memory(mode, fmt, ceiling_mb):
+    import pathlib, subprocess, sys
+    buf = BytesIO(); Image.new(mode, (4000, 4000), (30, 120, 200, 128) if mode == "RGBA" else (30, 120, 200)).save(buf, fmt)
+    # measured in a fresh process (peak RSS only ever grows, so it can't be told apart from earlier tests' in this one)
+    out = subprocess.run([sys.executable, "-c", _PEAK], input=buf.getvalue(), capture_output=True, timeout=60,
+                         cwd=str(pathlib.Path(photo_mod.__file__).resolve().parents[2]))
+    assert out.returncode == 0, out.stderr
+    assert int(out.stdout.strip()) < ceiling_mb
+
+
 # ── rendering ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("template", TEMPLATES)
@@ -249,3 +296,52 @@ def test_editing_the_profile_keeps_the_photo(client, monkeypatch):
     r = client.post(f"/cv/{created['id']}/edit", json={"instructions": "add Rust", "edit_token": created["edit_token"]})
     assert r.status_code == 200 and r.json()["has_photo"] is True
     assert DATA_URI_PREFIX in client.get(f"/cv/{created['id']}.html").text
+
+
+# ── the upload endpoint decodes under a gate, like every other heavy job ──
+
+def test_a_slow_decode_times_out_but_keeps_its_slot_until_the_thread_ends(client, monkeypatch):
+    import threading, time
+    created = _create(client)
+    release = threading.Event()
+    monkeypatch.setattr(app_module, "_DOC_TIMEOUT_SEC", 0.3)
+    monkeypatch.setattr(app_module, "process_cv_photo", lambda raw: (release.wait(5), b"x")[1])
+    before = app_module._photo_gate._value
+    assert _upload(client, created).status_code == 400
+    assert app_module._photo_gate._value == before - 1   # still occupied by the running decode
+    release.set(); time.sleep(0.4)
+    assert app_module._photo_gate._value == before       # freed when it finished
+
+
+def test_photo_decodes_are_limited_to_two_at_a_time_and_the_rest_get_503(client, monkeypatch):
+    import threading, time
+    created = _create(client)
+    release = threading.Event()
+    monkeypatch.setattr(app_module, "_DOC_TIMEOUT_SEC", 0.2)
+    monkeypatch.setattr(app_module, "process_cv_photo", lambda raw: (release.wait(5), b"x")[1])
+
+    async def quick_timeout_wait(coro, timeout):  # a full gate: don't really wait the 10 s for a slot
+        if getattr(coro, "__qualname__", "").startswith("Semaphore.acquire") and app_module._photo_gate.locked():
+            coro.close()
+            raise asyncio.TimeoutError
+        return await real_wait_for(coro, timeout)
+
+    real_wait_for = asyncio.wait_for
+    monkeypatch.setattr(app_module.asyncio, "wait_for", quick_timeout_wait)
+    codes = [_upload(client, created).status_code for _ in range(4)]
+    release.set(); time.sleep(0.4)
+    assert codes == [400, 400, 503, 503]
+
+
+def test_the_decode_runs_off_the_event_loop(client, monkeypatch):
+    import threading
+    created = _create(client)
+    seen = {}
+
+    def spy(raw):
+        seen["thread"] = threading.current_thread()
+        return process_cv_photo(raw)
+
+    monkeypatch.setattr(app_module, "process_cv_photo", spy)
+    assert _upload(client, created).status_code == 200
+    assert seen["thread"] is not threading.main_thread()

@@ -133,6 +133,8 @@ _preview_gate = asyncio.Semaphore(1)
 # PDF layout (WeasyPrint) is CPU-bound and takes seconds for a long document: it runs in a thread, at most two at a time,
 # and never on the event loop (a synchronous render froze every request - /health included - while it ran).
 _render_gate = asyncio.Semaphore(2)
+# Decoding an uploaded photo is memory-heavy (tens of MB for the largest picture allowed): two at a time, never on the loop.
+_photo_gate = asyncio.Semaphore(2)
 _RENDER_TIMEOUT_SEC = 30
 _DOC_TIMEOUT_SEC = 20          # reading an uploaded PDF/Word file
 _JOB_TIMEOUT_SEC = float(os.getenv("AUDIT_JOB_TIMEOUT_SEC", "300"))  # one audit, start to finish
@@ -626,8 +628,15 @@ async def set_cv_photo(cv_id: str, file: UploadFile = File(...), edit_token: str
     if len(raw) > CV_PHOTO_MAX_BYTES:
         raise HTTPException(status_code=413, detail={"code": "photo_too_large"})
     try:
-        jpeg = await asyncio.to_thread(process_cv_photo, raw)
+        await asyncio.wait_for(_photo_gate.acquire(), timeout=10)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Server is busy right now - please try again shortly")
+    try:
+        # _photo_gate is held until the decoding THREAD ends, not until we stop waiting for it.
+        jpeg = await _run_releasing_on_finish(_photo_gate, _DOC_TIMEOUT_SEC, process_cv_photo, raw)
     except ValueError:
+        raise HTTPException(status_code=400, detail={"code": "bad_image"})
+    except asyncio.TimeoutError:
         raise HTTPException(status_code=400, detail={"code": "bad_image"})
     await _cv_store.set_photo(cv_id, jpeg)
     _prewarm_preview(cv_id)
