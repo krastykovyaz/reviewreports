@@ -17,5 +17,7 @@ def render_pdf(report: Report, include_footer: bool = True) -> bytes:
     """
     from weasyprint import HTML
 
+    from src.service.pdf_fetch import deny_all_url_fetcher
+
     html = render_html(report, include_footer=False)
-    return HTML(string=html).write_pdf()
+    return HTML(string=html, url_fetcher=deny_all_url_fetcher()).write_pdf()

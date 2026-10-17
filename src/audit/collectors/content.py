@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from src.i18n import normalize_lang, pillar_name
 from src.i18n.core import make_translator
-from src.logger import logger
+from src.service.llm_log import log_llm_failure
 from src.message.types import HumanMessage, SystemMessage
 from src.model import model_manager
 from src.report.helpers import score_findings
@@ -94,10 +94,10 @@ async def _llm_review_content(text: str, model_name: str, lang: str) -> Optional
     try:
         response = await model_manager(model=model_name, messages=messages, response_format=ContentLLMReview)
     except Exception as exc:
-        logger.warning(f"| ⚠️ Content LLM review failed for model {model_name}: {exc}")
+        log_llm_failure("Content LLM review", model_name, exc=exc)
         return None
     if not response.success or not response.extra or not response.extra.parsed_model:
-        logger.warning(f"| ⚠️ Content LLM review returned no structured result: {getattr(response, 'message', None)}")
+        log_llm_failure("Content LLM review", model_name, response=response)
         return None
     return response.extra.parsed_model
 
