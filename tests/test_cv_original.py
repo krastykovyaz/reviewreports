@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 import src.service.app as app_module
 from src.cv.docx_preview import docx_to_html
 from src.service.cv_store import CVStore
-from tests.helpers import _PROFILE, _cv_pdf, _NS, _docx, _CV_LINES, _jpeg, _up, run
+from tests.helpers import _PROFILE, _cv_pdf, _NS, _docx, _docx_with_dtd, _CV_LINES, _jpeg, _up, run
 
 
 @pytest.fixture()
@@ -179,6 +179,43 @@ def test_a_broken_docx_gives_422_not_a_crash(client):
     import asyncio
     bad = asyncio.run(app_module._cv_store.set_original(d["id"], b"PK\x03\x04garbage", "x.docx", "docx"))
     assert bad and client.get(f"/cv/{d['id']}/original.html").status_code == 422
+
+
+def test_a_docx_with_a_dtd_is_refused_at_upload(client):
+    r = client.post("/cv/from-file", files={"file": ("bomb.docx", _docx_with_dtd(), "application/octet-stream")})
+    assert r.status_code == 400 and r.json()["detail"] == {"code": "doc_unreadable"}
+
+
+def test_a_stored_docx_with_a_dtd_is_not_previewed(client):
+    d = _up(client, _docx(_CV_LINES), "resume.docx")
+    assert run(app_module._cv_store.set_original(d["id"], _docx_with_dtd(), "bomb.docx", "docx"))
+    assert client.get(f"/cv/{d['id']}/original.html").status_code == 422
+
+
+def test_the_word_preview_is_rendered_once_per_change_not_per_request(client, monkeypatch):
+    calls = []
+
+    def counting(raw):
+        calls.append(1)
+        return docx_to_html(raw)
+
+    monkeypatch.setattr(app_module, "docx_to_html", counting)
+    d = _up(client, _docx(_CV_LINES), "resume.docx")
+    first = client.get(f"/cv/{d['id']}/original.html")
+    again = client.get(f"/cv/{d['id']}/original.html", params={"lang": "ru"})  # the page chrome differs by language, the parse does not
+    assert first.status_code == again.status_code == 200 and "Northwind Systems" in again.text and len(calls) == 1
+    # any change to the CV (here: a photo) gives it a new key and the next hit renders again
+    client.post(f"/cv/{d['id']}/photo", files={"file": ("p.jpg", _jpeg(), "image/jpeg")}, data={"edit_token": d["edit_token"]})
+    client.get(f"/cv/{d['id']}/original.html")
+    assert len(calls) == 2
+    assert len(list(app_module._PREVIEW_DIR.glob(f"{d['id']}.original-html.*"))) == 1  # the superseded copy was dropped
+
+
+def test_a_failed_word_preview_is_not_cached(client, monkeypatch):
+    d = _up(client, _docx(_CV_LINES), "resume.docx")
+    run(app_module._cv_store.set_original(d["id"], b"PK\x03\x04garbage", "x.docx", "docx"))
+    assert client.get(f"/cv/{d['id']}/original.html").status_code == 422
+    assert not list(app_module._PREVIEW_DIR.glob(f"{d['id']}.*"))
 
 
 # ── storage ───────────────────────────────────────────────────────

@@ -173,3 +173,55 @@ def test_a_busy_server_says_so_instead_of_queueing(client, monkeypatch):
     async def busy(gate): raise app_module.ServerBusy()
     monkeypatch.setattr(app_module, "_acquire_or_reject", busy)
     assert _post(client, _cv_pdf()).status_code == 503
+
+
+# ── the rendered PDF is cached per (CV change, template), and goes with the CV ──
+
+def _counting_renderer(monkeypatch):
+    calls = []
+
+    def counting(profile, template, photo=None):
+        calls.append(template)
+        return render_cv_pdf(profile, template, photo)
+
+    monkeypatch.setattr(app_module, "render_cv_pdf", counting)
+    return calls
+
+
+def test_a_pdf_is_rendered_once_per_change_and_template(client, monkeypatch):
+    calls = _counting_renderer(monkeypatch)
+    d = _post(client, _cv_pdf()).json(); i = d["id"]
+    a = client.get(f"/cv/{i}.pdf").content
+    assert client.get(f"/cv/{i}.pdf").content == a and calls == ["modern"]
+    assert client.get(f"/cv/{i}.pdf", params={"template": "classic"}).content.startswith(b"%PDF") and calls == ["modern", "classic"]
+    client.get(f"/cv/{i}.pdf", params={"template": "classic"})
+    assert calls == ["modern", "classic"]  # each template is its own cache entry
+
+
+def test_changing_the_cv_makes_the_next_pdf_fresh(client, monkeypatch):
+    from tests.helpers import _jpeg
+    calls = _counting_renderer(monkeypatch)
+    d = _post(client, _cv_pdf()).json(); i = d["id"]
+    client.get(f"/cv/{i}.pdf")
+    client.post(f"/cv/{i}/photo", files={"file": ("p.jpg", _jpeg(), "image/jpeg")}, data={"edit_token": d["edit_token"]})
+    client.get(f"/cv/{i}.pdf")
+    assert calls == ["modern", "modern"]
+    assert len(list(app_module._PREVIEW_DIR.glob(f"{i}.pdf-modern.*"))) == 1  # the superseded PDF was removed
+
+
+def test_deleting_the_cv_removes_its_cached_pdfs(client):
+    d = _post(client, _cv_pdf()).json(); i = d["id"]
+    client.get(f"/cv/{i}.pdf"); client.get(f"/cv/{i}.pdf", params={"template": "compact"})
+    assert len(list(app_module._PREVIEW_DIR.glob(f"{i}.pdf-*"))) == 2
+    client.delete(f"/cv/{i}", headers={"X-Edit-Token": d["edit_token"]})
+    assert not list(app_module._PREVIEW_DIR.glob(f"{i}.*"))
+
+
+def test_a_render_that_fails_leaves_nothing_cached(client, monkeypatch):
+    def broken(profile, template, photo=None):
+        raise OSError("no pango")
+
+    monkeypatch.setattr(app_module, "render_cv_pdf", broken)
+    d = _post(client, _cv_pdf()).json()
+    assert client.get(f"/cv/{d['id']}.pdf").status_code == 503
+    assert not list(app_module._PREVIEW_DIR.glob(f"{d['id']}.*"))

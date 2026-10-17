@@ -10,12 +10,12 @@ import html
 import io
 import re
 import zipfile
-import xml.etree.ElementTree as ET
 
-from src.cv.doc_text import MAX_XML_TOTAL_BYTES, read_part, word_parts
+from src.cv.doc_text import MAX_XML_TOTAL_BYTES, parse_word_xml, read_part, word_parts
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_BLOCKS = 3000
+MAX_PART_CHARS = 1_000_000  # markup built from any one part (hundreds of pages); a legal but huge file is cut off here
 
 
 def _on(el) -> bool:
@@ -25,7 +25,10 @@ def _on(el) -> bool:
 
 def _runs_html(p) -> str:
     out = []
+    size = 0
     for r in p.iter(_W + "r"):
+        if size > MAX_PART_CHARS:
+            break  # one enormous paragraph is cut off, not built in full
         rpr = r.find(_W + "rPr")
         bold = rpr is not None and _on(rpr.find(_W + "b"))
         ital = rpr is not None and _on(rpr.find(_W + "i"))
@@ -33,7 +36,7 @@ def _runs_html(p) -> str:
         text = []
         for el in r:
             if el.tag == _W + "t" and el.text:
-                text.append(html.escape(el.text))
+                text.append(html.escape(el.text[:MAX_PART_CHARS]))
             elif el.tag == _W + "tab":
                 text.append("&emsp;")
             elif el.tag in (_W + "br", _W + "cr"):
@@ -41,6 +44,7 @@ def _runs_html(p) -> str:
         s = "".join(text)
         if not s:
             continue
+        size += len(s)
         if bold: s = f"<b>{s}</b>"
         if ital: s = f"<i>{s}</i>"
         if und: s = f"<u>{s}</u>"
@@ -77,13 +81,15 @@ def _blocks(root) -> list:
         if in_list: out.append("</ul>"); in_list = False
     body = root.find(_W + "body")
     children = list(body) if body is not None else list(root)
+    size = 0  # characters of markup built so far in this part
     for el in children:
-        if len(out) > MAX_BLOCKS:
+        if len(out) > MAX_BLOCKS or size > MAX_PART_CHARS:
             break
         if el.tag == _W + "p":
             r = _para(el)
             if r is None: continue
             kind, h = r
+            size += len(h)
             if kind == "li":
                 if not in_list: out.append("<ul>"); in_list = True
                 out.append(f"<li>{h}</li>")
@@ -93,10 +99,14 @@ def _blocks(root) -> list:
             flush()
             rows = []
             for tr in el.iter(_W + "tr"):
+                if size > MAX_PART_CHARS:
+                    break
                 cells = []
                 for tc in tr.findall(_W + "tc"):
                     parts = [r[1] for p in tc.iter(_W + "p") if (r := _para(p))]
-                    cells.append("<td>" + "<br>".join(parts) + "</td>")
+                    cell = "<td>" + "<br>".join(parts) + "</td>"
+                    size += len(cell)
+                    cells.append(cell)
                 rows.append("<tr>" + "".join(cells) + "</tr>")
             if rows: out.append("<table>" + "".join(rows) + "</table>")
     flush()
@@ -118,5 +128,5 @@ def docx_to_html(raw: bytes) -> str:
     blocks = []
     budget = [MAX_XML_TOTAL_BYTES]
     for info in word_parts(zf):
-        blocks += _blocks(ET.fromstring(read_part(zf, info, budget)))
+        blocks += _blocks(parse_word_xml(read_part(zf, info, budget)))
     return f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Original</title><style>{_CSS}</style></head><body><div class="page">{"".join(blocks)}</div></body></html>'

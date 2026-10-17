@@ -14,7 +14,7 @@ from src.cv import doc_text
 from src.cv.doc_text import DocError, extract_document_text
 from src.cv.schema import CVProfile
 from src.service.cv_store import CVStore
-from tests.helpers import _PROFILE, _cv_pdf, _NS, _p, _docx, _CV_LINES
+from tests.helpers import _PROFILE, _cv_pdf, _NS, _p, _docx, _docx_with_dtd, _CV_LINES
 
 
 
@@ -262,3 +262,74 @@ def test_the_whole_file_shares_one_inflate_budget(monkeypatch):
 def test_ordinary_documents_with_headers_and_footers_still_read_fine():
     text = extract_document_text(_docx(_CV_LINES, header=["jordan.reyes@email.com | +1 415 555 0142"], footer=["San Francisco"]))
     assert "jordan.reyes@email.com" in text and "San Francisco" in text and "Northwind Systems" in text
+
+
+# ── XML entity expansion ("billion laughs"): Word never writes a DTD, so a part with one is refused unread ──
+
+def test_a_part_with_a_dtd_is_rejected_by_text_extraction():
+    with pytest.raises(DocError) as e:
+        extract_document_text(_docx_with_dtd())
+    assert e.value.code == "unreadable"
+
+
+def test_a_part_with_a_dtd_is_rejected_by_the_preview():
+    from src.cv.docx_preview import docx_to_html
+    with pytest.raises(DocError):
+        docx_to_html(_docx_with_dtd())
+
+
+def test_a_dtd_in_a_header_part_is_rejected_too():
+    with pytest.raises(DocError):
+        extract_document_text(_docx_with_dtd(part="word/header1.xml"))
+
+
+@pytest.mark.parametrize("dtd", [
+    '<!doctype w:document [<!entity a "x">]>',                      # lower case
+    '<!DOCTYPE w:document SYSTEM "file:///etc/passwd">',            # external, no entities
+    '<!  ENTITY a "x">',                                            # declaration without a DOCTYPE wrapper
+    '<!DOCTYPE w:document [<!ENTITY a "x">]>',
+])
+def test_every_spelling_of_a_dtd_is_rejected(dtd):
+    with pytest.raises(DocError):
+        extract_document_text(_docx_with_dtd(dtd=dtd, lines=["Jordan Reyes, senior backend engineer at Northwind Systems since 2021, contact jordan.reyes@email.com"]))
+
+
+def test_a_dtd_hidden_behind_another_encoding_is_rejected_not_parsed():
+    # The raw-bytes check can only see ASCII: UTF-16 (NUL bytes) and a declared exotic charset (here EBCDIC, which expat
+    # would decode through Python's codecs) would otherwise carry the DOCTYPE past it.
+    for enc in ("utf-16", "cp037"):
+        part = ('<?xml version="1.0" encoding="%s"?><!DOCTYPE d [<!ENTITY a "x">]><w:document %s><w:body>%s</w:body></w:document>'
+                % (enc, _NS, _p("x" * 200))).encode(enc)
+        b = BytesIO()
+        with zipfile.ZipFile(b, "w") as z:
+            z.writestr("word/document.xml", part)
+        with pytest.raises(DocError):
+            extract_document_text(b.getvalue())
+
+
+def test_a_normal_docx_with_an_xml_declaration_still_parses():
+    raw = _docx_with_dtd(dtd="", lines=_CV_LINES)  # same builder, same XML declaration, no DTD
+    text = extract_document_text(raw)
+    assert "Northwind Systems" in text
+
+
+def test_text_kept_from_one_part_is_capped(monkeypatch):
+    monkeypatch.setattr(doc_text, "MAX_PART_CHARS", 500)
+    lines = doc_text._paragraph_lines(_docx_part([f"paragraph number {i} of many" for i in range(1000)]))
+    assert 0 < len("".join(lines)) < 700  # stops soon after the cap, not after all 1000 paragraphs
+    one_big = doc_text._paragraph_lines(_docx_part(["word " * 5000]))
+    assert len(one_big[0]) < 700  # and one enormous paragraph is cut off inside the paragraph
+
+
+def test_the_preview_caps_what_it_builds_from_one_part(monkeypatch):
+    from src.cv import docx_preview
+    monkeypatch.setattr(docx_preview, "MAX_PART_CHARS", 500)
+    page = docx_preview.docx_to_html(_docx([f"paragraph number {i} of many" for i in range(1000)]))
+    assert 0 < page.count("<p>") < 60
+    one_big = docx_preview.docx_to_html(_docx(["word " * 5000]))
+    assert len(one_big) < 3000
+
+
+def _docx_part(paragraphs) -> bytes:
+    """Just the document.xml of a docx made from these paragraphs."""
+    return f"<w:document {_NS}><w:body>{''.join(_p(t) for t in paragraphs)}</w:body></w:document>".encode()

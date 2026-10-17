@@ -64,6 +64,26 @@ def _docx(body_paragraphs, header=(), footer=(), extra_parts=None) -> bytes:
     return b.getvalue()
 
 
+_BOMB_DTD = ('<!DOCTYPE w:document [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+             '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">]>')
+
+
+def _docx_with_dtd(dtd=_BOMB_DTD, lines=None, part="word/document.xml", prolog='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>') -> bytes:
+    """A Word file whose part carries a DTD with nested internal entities (the expansion-bomb shape, kept tiny here: x1000).
+    Word itself never writes a DOCTYPE. `part` picks which part carries it (the body unless a header is asked for)."""
+    body = "".join(_p(t) for t in (lines or ["Jordan Reyes, senior engineer at Northwind Systems, jordan.reyes@email.com", "&c;"]))
+    doc = f"{prolog}{dtd}<w:document {_NS}><w:body>{body}</w:body></w:document>"
+    b = BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        if part == "word/document.xml":
+            z.writestr(part, doc)
+        else:
+            z.writestr("word/document.xml", f"<w:document {_NS}><w:body>{_p('Body text of the document')}</w:body></w:document>")
+            z.writestr(part, doc.replace("w:document", "w:hdr").replace("<w:body>", "").replace("</w:body>", ""))
+    return b.getvalue()
+
+
 _CV_LINES = ["Jordan Reyes", "Senior Backend Engineer at Northwind Systems 2021 - Present", "Redesigned the payments pipeline and led a team of four.", "B.S. Computer Science, UC San Diego, 2018"]
 
 

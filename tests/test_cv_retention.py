@@ -120,6 +120,18 @@ async def test_a_purge_removes_previews_reports_and_only_files_inside_the_upload
 
 
 @pytest.mark.asyncio
+async def test_a_purge_removes_cached_pdfs_and_pages_too_and_sweeps_orphaned_ones(stores, tmp_path):
+    cv, jobs = stores; await cv.init(); await jobs.init()
+    (tmp_path / ".retention_started").write_text(_iso(datetime.now(timezone.utc) - 10 * DAY))
+    i = (await cv.create(_PROFILE, "modern"))[0]; await _age(cv, i, datetime.now(timezone.utc) - 8 * DAY)
+    previews = tmp_path / "previews"; previews.mkdir()
+    for name in (f"{i}.pdf-modern.abc.pdf", f"{i}.original-html.abc.html", f"{i}.modern.abc.jpg", "deadbeef.pdf-modern.k.pdf"):
+        (previews / name).write_bytes(b"x")
+    r = await app_module._purge_expired()
+    assert r["cvs"] == 1 and not list(previews.glob("*"))
+
+
+@pytest.mark.asyncio
 async def test_orphaned_preview_images_are_swept_even_during_the_grace_period(stores, tmp_path):
     cv, jobs = stores; await cv.init(); await jobs.init()
     keep = (await cv.create(_PROFILE, "modern"))[0]

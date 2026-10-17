@@ -175,7 +175,9 @@ def _retention_marker() -> Path:
 
 
 def _drop_preview_files(cv_id: str) -> None:
-    for f in _PREVIEW_DIR.glob(f"{cv_id}.*.jpg"):
+    # Everything derived from a CV lives in _PREVIEW_DIR as "<cv_id>.<label>.<key>.<ext>": share images (.jpg), the Word
+    # original's HTML page and rendered PDFs (see _cached_derived). All of it goes with the CV.
+    for f in _PREVIEW_DIR.glob(f"{cv_id}.*"):
         f.unlink(missing_ok=True)
 
 
@@ -194,9 +196,10 @@ async def _purge_expired(now: Optional[datetime] = None) -> dict:
     except ValueError:
         started = now
         marker.write_text(now.isoformat())  # repaired: left corrupt it would restart the grace period on every run, forever
-    # Preview images of CVs that no longer exist (e.g. deleted while one was rendering) are always safe to drop.
+    # Derived files (preview images, cached pages/PDFs) of CVs that no longer exist (e.g. deleted while one was rendering)
+    # are always safe to drop.
     if _PREVIEW_DIR.exists():
-        for f in _PREVIEW_DIR.glob("*.jpg"):
+        for f in _PREVIEW_DIR.glob("*.*"):
             if await _cv_store.get(f.name.split(".")[0]) is None:
                 f.unlink(missing_ok=True)
     if now < started + timedelta(days=days):
@@ -690,11 +693,13 @@ async def get_cv_original_page(cv_id: str, lang: str = "en"):
     if row["original_kind"] == "pdf":
         page = _pdf_original_page(cv_id, row["original_name"] or "cv.pdf", t_chrome("ui.cv.download_original", lang))
     else:
-        orig = await _cv_store.get_original(cv_id)
-        if orig is None:
-            raise HTTPException(status_code=404, detail="No original file for this CV")
+        async def build() -> bytes:
+            orig = await _cv_store.get_original(cv_id)
+            if orig is None:
+                raise HTTPException(status_code=404, detail="No original file for this CV")
+            return (await _render_in_pool(docx_to_html, orig["data"])).encode()
         try:
-            page = await _render_in_pool(docx_to_html, orig["data"])
+            page = (await _cached_derived(cv_id, row, "original-html", "html", build)).decode()
         except HTTPException:
             raise  # busy / too slow: 503, not "could not preview"
         except Exception:
@@ -742,7 +747,7 @@ async def remove_cv_original(cv_id: str, x_edit_token: str = Header("")):
     if not _cv_store.verify_edit_token(row, x_edit_token):
         raise HTTPException(status_code=403, detail="Invalid or missing edit token")
     await _cv_store.set_original(cv_id, None)
-    for f in _PREVIEW_DIR.glob(f"{cv_id}.original.*.jpg"):  # its share image shows the file that was just removed
+    for f in [*_PREVIEW_DIR.glob(f"{cv_id}.original.*.jpg"), *_PREVIEW_DIR.glob(f"{cv_id}.original-html.*")]:  # its share image and page show the file that was just removed
         f.unlink(missing_ok=True)
     return CVResponse(id=cv_id, template=row["template"], profile=json.loads(row["profile_json"]), has_photo=bool(row.get("has_photo")), expires_at=_expires_from_now())
 
@@ -776,8 +781,10 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
         rendered = _inject_og_meta(rendered, title=title, description=description, url=canonical_url,
                                    image=f"{_PREVIEW_SITE}/cv/{cv_id}/preview.jpg?template={chosen_template}")
     elif output_format == "pdf":
+        async def build() -> bytes:
+            return await _render_in_pool(render_cv_pdf, profile, chosen_template, photo_uri)
         try:
-            rendered = await _render_in_pool(render_cv_pdf, profile, chosen_template, photo_uri)
+            rendered = await _cached_derived(cv_id, row, f"pdf-{chosen_template}", "pdf", build)
         except (ImportError, OSError) as exc:  # OSError: WeasyPrint without system Pango/GObject
             raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
     else:
@@ -949,6 +956,42 @@ _bg_tasks: set = set()
 
 def _preview_key(row: dict, label: str) -> str:
     return hashlib.sha1(f"{row.get('updated_at')}|{label}|{int(bool(row.get('has_photo')))}".encode()).hexdigest()[:10]
+
+
+# What the cached derived files below depend on besides the CV's own data: the templates and the renderer. A deploy that
+# changes either must not keep serving PDFs/pages made by the old code until the CV happens to change.
+def _render_salt() -> str:
+    root = Path(__file__).resolve().parent.parent / "cv"
+    stamps = [str(int(f.stat().st_mtime)) for f in sorted([*(root / "templates").glob("*"), root / "render.py", root / "docx_preview.py", root / "doc_text.py"]) if f.exists()]
+    return hashlib.sha1("|".join(stamps).encode()).hexdigest()[:6]
+
+
+_RENDER_SALT = _render_salt()
+
+
+async def _cached_derived(cv_id: str, row: dict, label: str, ext: str, build) -> bytes:
+    """Bytes derived from a CV (its Word original's HTML page, a rendered PDF), cached on disk like the preview images:
+    keyed by what the CV last changed at, so a stale copy is never served, and removed with the CV (_drop_preview_files).
+    A public URL that anyone can hit repeatedly then costs one render per change, not one per request.
+    `build` is an async callable producing the bytes; only a successful build is cached."""
+    path = _PREVIEW_DIR / f"{cv_id}.{label}.{_preview_key(row, label)}{_RENDER_SALT}.{ext}"
+    if path.exists():
+        return path.read_bytes()
+    lock = _preview_locks.get(f"{cv_id}.{label}.{ext}")
+    if lock is None:
+        lock = _preview_locks[f"{cv_id}.{label}.{ext}"] = asyncio.Lock()
+    async with lock:
+        if path.exists():
+            return path.read_bytes()
+        data = await build()
+        _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        for old in _PREVIEW_DIR.glob(f"{cv_id}.{label}.*.{ext}"):
+            if old != path:
+                old.unlink(missing_ok=True)
+        return data
 
 
 async def _cv_preview_jpeg(cv_id: str, row: dict, template: str, original: bool = False) -> bytes:

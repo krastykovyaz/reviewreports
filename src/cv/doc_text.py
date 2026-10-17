@@ -16,6 +16,7 @@ from src.cv.pdf_text import MAX_CHARS, MIN_CHARS, PdfError, extract_pdf_text
 MAX_XML_BYTES = 10 * 1024 * 1024   # inflated size of any one part we read
 MAX_XML_TOTAL_BYTES = 16 * 1024 * 1024  # ... and of all the parts of one file together
 MAX_EXTRA_PARTS = 6                # header/footer parts read besides the body
+MAX_PART_CHARS = 4 * MAX_CHARS     # text kept from any one part: far more than the 20k the model ever sees, but never unbounded
 MAX_ZIP_ENTRIES = 500
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # legacy .doc, and password-protected .docx
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -45,6 +46,27 @@ def read_part(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: list) -> bytes
     return data
 
 
+_XML_ENCODING_RE = re.compile(rb"^\s*<\?xml[^>]*?encoding\s*=\s*[\"']([^\"']+)", re.I)
+_DTD_RE = re.compile(rb"<!\s*(?:doctype|entity)", re.I)
+
+
+def parse_word_xml(data: bytes) -> ET.Element:
+    """Parses one part of a Word file, refusing anything that can't be a Word-written part.
+
+    Word never emits a DTD, but expat expands internal entities: a 9 MB part of nested entity definitions inflates to ~900 MB
+    of text (measured: ~900 MB of memory) inside this one process. So a part with a DOCTYPE/ENTITY declaration is rejected on
+    its raw bytes BEFORE parsing. The check has to see the bytes as written, so a part that isn't plain UTF-8/ASCII (NUL
+    bytes = UTF-16/32; or an XML declaration naming another encoding, which expat would decode only after we looked) is
+    rejected too: Word writes UTF-8."""
+    m = _XML_ENCODING_RE.match(data[:200])
+    if b"\x00" in data or (m and m.group(1).lower() not in (b"utf-8", b"us-ascii", b"ascii")) or _DTD_RE.search(data):
+        raise DocError("unreadable")
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError:
+        raise DocError("unreadable")
+
+
 def word_parts(zf: zipfile.ZipFile) -> list:
     """The members worth reading, in reading order: headers, body, footers - with the header/footer count capped."""
     names = {i.filename: i for i in zf.infolist()}
@@ -58,13 +80,20 @@ def word_parts(zf: zipfile.ZipFile) -> list:
 
 
 def _paragraph_lines(xml_bytes: bytes) -> list:
-    root = ET.fromstring(xml_bytes)
+    root = parse_word_xml(xml_bytes)
     lines = []
+    kept = 0  # characters accumulated in this part: a legal but huge document can't build an unbounded string
     for p in root.iter(_W + "p"):
+        if kept > MAX_PART_CHARS:
+            break
         parts = []
+        size = 0
         for el in p.iter():
+            if size > MAX_PART_CHARS:
+                break  # one enormous paragraph is cut off the same way
             if el.tag == _W + "t" and el.text:
-                parts.append(el.text)
+                parts.append(el.text[:MAX_PART_CHARS])
+                size += len(el.text)
             elif el.tag == _W + "tab":
                 parts.append("\t")
             elif el.tag == _W + "br":
@@ -73,6 +102,7 @@ def _paragraph_lines(xml_bytes: bytes) -> list:
         # A text box is stored twice (modern + fallback copy): drop the immediate repeat.
         if line and (not lines or lines[-1] != line):
             lines.append(line)
+            kept += len(line)
     return lines
 
 
