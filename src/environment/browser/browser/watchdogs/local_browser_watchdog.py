@@ -141,9 +141,14 @@ class LocalBrowserWatchdog(BaseWatchdog):
 				self.logger.debug(
 					f'[LocalBrowserWatchdog] 📂 user_data_dir={profile.user_data_dir}, profile_directory={profile.profile_directory}'
 				)
+				# profile.env, when set, is the browser process's COMPLETE environment (nothing is inherited from this process):
+				# a caller that opens untrusted sites passes an allowlist so the browser can't read this process's secrets.
+				# None keeps the old behaviour (inherit everything).
+				browser_env = {k: str(v) for k, v in profile.env.items()} if profile.env is not None else None
 				subprocess = await asyncio.create_subprocess_exec(
 					browser_path,
 					*launch_args,
+					env=browser_env,
 					stdout=asyncio.subprocess.PIPE,
 					stderr=asyncio.subprocess.PIPE,
 				)

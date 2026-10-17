@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 import httpx
 
+from src.audit.http_client import SSRFBlocked, _guard_request, open_response
 from src.i18n import normalize_lang, pillar_name
 from src.i18n.core import make_translator
 from src.report.schema import Finding, Pillar, Status
@@ -31,13 +32,37 @@ _M = {
 _t = make_translator(_M)
 
 
+_BLOCKED = "blocked"
+_CHECK_DEADLINE_SEC = 20.0  # one link, HEAD + GET fallback + redirects together
+
+
+async def _status(client: httpx.AsyncClient, method: str, href: str) -> int:
+    """The status line only: the response is closed as soon as its headers are in, its body is never read (the hrefs are
+    chosen by the audited site, so a "link" can be a multi-GB download or an endless stream)."""
+    resp = await open_response(client, method, href)
+    try:
+        return resp.status_code
+    finally:
+        await resp.aclose()
+
+
+async def _probe(client: httpx.AsyncClient, href: str) -> int:
+    status = await _status(client, "HEAD", href)
+    if status >= 400 or status == 405:
+        status = await _status(client, "GET", href)  # some servers reject HEAD
+    return status
+
+
 async def _check(client: httpx.AsyncClient, href: str, sem: asyncio.Semaphore):
     async with sem:
         try:
-            resp = await client.head(href)
-            if resp.status_code >= 400 or resp.status_code == 405:
-                resp = await client.get(href)  # some servers reject HEAD
-            return href, resp.status_code, None
+            return href, await asyncio.wait_for(_probe(client, href), timeout=_CHECK_DEADLINE_SEC), None
+        except SSRFBlocked:
+            # The link points at a non-public address (or redirects there): it is never requested, and it is not
+            # reported either - a published "href -> status" line for an internal URL would be a port/path oracle.
+            return href, None, _BLOCKED
+        except asyncio.TimeoutError:
+            return href, None, "Timeout"
         except httpx.HTTPError as exc:
             return href, None, type(exc).__name__
 
@@ -57,8 +82,17 @@ async def collect_broken_links(facts: Dict[str, Any], max_check: int = 25, lang:
     ]
 
     sem = asyncio.Semaphore(8)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0, headers={"User-Agent": "reviewreports-linkcheck/1.0"}) as client:
+    # Every hop (including redirects) goes through the same SSRF guard as the page fetch: the hrefs come from the
+    # audited site, i.e. from the caller.
+    # Redirects are followed by open_response (not httpx) so a redirect's body is never read either.
+    async with httpx.AsyncClient(follow_redirects=False, timeout=10.0, headers={"User-Agent": "reviewreports-linkcheck/1.0"},
+                                 event_hooks={"request": [_guard_request]}) as client:
         results = await asyncio.gather(*(_check(client, href, sem) for href in unique))
+    results = [r for r in results if r[2] != _BLOCKED]
+    unique = [r[0] for r in results]
+    if not unique:
+        findings.append(Finding(check=_t("check.broken_links", lang), status=Status.NA, detail=_t("none_found", lang)))
+        return Pillar(name=pillar_name("Links", lang), score=None, summary=_t("none_found", lang), findings=findings)
 
     broken = [(h, code, err) for h, code, err in results if code is None or code >= 400]
     if broken:

@@ -72,6 +72,7 @@ async def test_collect_llm_review_degrades_on_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_document_review_end_to_end_without_model(tmp_path):
+    pytest.importorskip("markitdown", reason="document text extraction needs the full install, not the website_audit-only one")
     f = tmp_path / "resume.txt"
     f.write_text("Jane Doe\nSoftware Engineer\n" + "Built things. " * 30)
 

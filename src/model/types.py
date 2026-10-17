@@ -24,6 +24,15 @@ class ModelConfig(BaseModel):
     supports_streaming: bool = Field(default=True, description="Whether streaming is supported.")
     supports_functions: bool = Field(default=False, description="Whether tool/function calling is supported.")
     supports_vision: bool = Field(default=False, description="Whether multimodal inputs are supported.")
+    supports_json_schema: bool = Field(
+        default=True,
+        description=(
+            "Whether the provider accepts OpenAI's response_format=json_schema (strict structured "
+            "outputs). False for OpenAI-compatible APIs that reject it (DeepSeek: 400 'This "
+            "response_format type is unavailable'); the client then uses plain JSON mode with the "
+            "schema in the prompt and validates the reply itself."
+        ),
+    )
     output_version: Optional[str] = Field(
         default=None,
         description="Optional output schema version when required by provider.",

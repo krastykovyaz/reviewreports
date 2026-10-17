@@ -24,14 +24,14 @@
 <body>
   <div class="lang-switch">
     {% for code in languages %}
-    <a href="/?lang={{ code }}" class="{{ 'active' if code == lang else '' }}">{{ code.upper() }}</a>
+    <a href="/audit/?lang={{ code }}" class="{{ 'active' if code == lang else '' }}">{{ code.upper() }}</a>
     {% endfor %}
   </div>
 
   <h1>{{ t('ui.app_title') }}</h1>
   <p class="tagline">{{ t('ui.tagline') }}</p>
 
-  <form action="/submit" method="post" enctype="multipart/form-data">
+  <form action="/audit/submit" method="post" enctype="multipart/form-data">
     <input type="hidden" name="lang" value="{{ lang }}">
     <label>{{ t('ui.report_kind') }}
       <select name="kind" id="kind" onchange="toggleInputs()">
@@ -60,7 +60,7 @@
     <button type="submit">{{ t('ui.generate') }}</button>
   </form>
 
-  <a class="cv-nav" href="/cv-builder?lang={{ lang }}">{{ t('ui.cv.nav_link') }} &rarr;</a>
+  <a class="cv-nav" href="/audit/cv-builder?lang={{ lang }}">{{ t('ui.cv.nav_link') }} &rarr;</a>
 
   <script>
     const FILE_KINDS = {{ file_kinds | tojson }};

@@ -8,7 +8,9 @@
      default, so @media print below applies there automatically — the same
      rendered HTML also works as an on-screen preview via @media screen,
      with no separate "print mode" needed. */
-  @page { size: letter; margin: 0; }
+  /* First page edge to edge; pages after it (a long CV) get a top/bottom margin so text isn't flush with the paper's edge. */
+  @page { size: letter; margin: 0.5in 0; }
+  @page :first { margin: 0; }
   :root { --accent: #2563eb; --ink: #1a1d23; --muted: #5b6270; }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); }
@@ -18,23 +20,14 @@
   @media screen { .page { border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06); } }
   @media print { .page { width: 8.5in; margin: 0; } }
 
-  /* Fixed to US Letter's aspect ratio (8.5:11), clipped rather than
-     scrollable — the layout below was validated to fit within this frame
-     for a full one-page sample profile; unusually long content (many jobs,
-     long bullets) can still clip, since fit depends on content length. */
-  .doc { width: 100%; aspect-ratio: 8.5 / 11; overflow: hidden; font-size: 12px; }
-  /* WeasyPrint silently ignores aspect-ratio entirely (confirmed via its
-     own warning output), so print mode needs an explicit height instead.
-     Also confirmed: even with this height set, overflow:hidden does NOT
-     stop WeasyPrint from paginating content that does not fit — a
-     too-long profile spills onto additional PDF pages rather than being
-     clipped there. That is only true for the PDF path; the on-screen
-     preview (a real browser, no pagination) does clip at one page as
-     described above. Prefer the safer PDF behavior (visible overflow) over
-     trying to force a hard clip that would silently lose real content. */
-  @media print { .doc { height: 11in; font-size: 22.3px; } }
+  /* A US-Letter-proportioned card that GROWS with its content. A short CV is exactly one page
+     (aspect-ratio is the floor); a longer one makes the card taller instead of cutting its end
+     off - nothing is clipped on screen. In the PDF, WeasyPrint ignores aspect-ratio, so print
+     asks for min-height 11in instead; content beyond that flows onto further pages. */
+  .doc { width: 100%; aspect-ratio: 8.5 / 11; font-size: 12px; }
+  @media print { .doc { min-height: 11in; font-size: 22.3px; } }
 
-  .modern { display: flex; width: 440px; height: 569px; }
+  .modern { display: flex; width: 440px; min-height: 569px; }
   /* Print output uses literal scaled values below (×1.8545, matching 8.5in's
      816px vs. the 440px this layout was screen-validated at) rather than a
      CSS transform:scale on .modern — WeasyPrint was found to truncate a
@@ -43,12 +36,20 @@
      non-flex content, which scales via transform correctly; this is
      specific to multi-column layout mechanisms). Literal values sidestep
      that bug entirely rather than working around it. */
-  @media print { .modern { width: 8.5in; height: 11in; } }
+  /* Print: a table, not flex. WeasyPrint can't fragment a flex container across pages (the whole
+     main column jumped to page 2 for a long CV); table cells flow page to page and the sidebar's
+     background follows. */
+  @media print {
+    .modern { display: table; table-layout: fixed; width: 8.5in; min-height: 11in; }
+    .modern .side, .modern .main { display: table-cell; vertical-align: top; }
+    .modern .side { width: 36%; }
+  }
   .modern .side { width: 36%; background: #1e2330; color: #d7dbe6; padding: 18px 14px; }
   .modern .side .name { color: #fff; font-size: 17px; font-weight: 700; line-height: 1.25; }
+  .modern .side .photo { display: block; width: 76px; height: 76px; border-radius: 50%; object-fit: cover; margin: 0 0 12px; border: 2px solid #3a4258; }
   .modern .side .role { color: #8fb3ff; font-size: 11px; margin: 4px 0 15px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
   .modern .side h4 { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #7b8296; margin: 13px 0 5px; }
-  .modern .side p, .modern .side li { font-size: 11px; line-height: 1.45; margin: 0 0 3px; color: #c3c8d6; }
+  .modern .side p, .modern .side li { font-size: 11px; line-height: 1.45; margin: 0 0 3px; color: #c3c8d6; overflow-wrap: anywhere; }
   .modern .side ul { padding-left: 14px; margin: 0; }
   .modern .main { flex: 1; padding: 15px 16px; }
   .modern .main h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 4px; margin: 0 0 9px; }
@@ -56,11 +57,14 @@
   .modern .summary { font-size: 11.5px; line-height: 1.45; color: #333; }
   .modern .job { margin-bottom: 7px; }
   .modern .job-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; }
+  .modern .job-head > span:first-child { min-width: 0; }
+  .modern .job-head > span:last-child { flex: none; white-space: nowrap; margin-left: 10px; }
   .modern .job-sub { font-size: 11px; color: var(--muted); margin: 1px 0 4px; font-style: italic; }
   .modern .job ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.5; color: #333; }
 
   @media print {
     .modern .side { padding: 33.4px 26px; }
+    .modern .side .photo { width: 141px; height: 141px; margin-bottom: 22.3px; border-width: 3.7px; }
     .modern .side .name { font-size: 31.5px; }
     .modern .side .role { font-size: 20.4px; margin: 7.4px 0 27.8px; }
     .modern .side h4 { font-size: 18.5px; margin: 24.1px 0 9.3px; }
@@ -82,6 +86,7 @@
 <div class="doc">
   <div class="modern">
     <div class="side">
+      {% if photo %}<img class="photo" src="{{ photo }}" alt="">{% endif %}
       <div class="name">{{ profile.name }}</div>
       {% if profile.role %}<div class="role">{{ profile.role }}</div>{% endif %}
 
@@ -93,9 +98,7 @@
 
       {% if profile.skills %}
       <h4>Skills</h4>
-      <ul>
-        {% for skill in profile.skills %}<li>{{ skill }}</li>{% endfor %}
-      </ul>
+      <p>{{ profile.skills|join("\u00a0· ") }}</p>
       {% endif %}
 
       {% if profile.education %}
