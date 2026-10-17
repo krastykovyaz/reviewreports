@@ -12,6 +12,8 @@ from typing import List, Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
+from src.service.child_env import scrubbed_child_env
+
 W, H = 1200, 630
 MAX_BYTES = 250 * 1024
 _BG = (238, 240, 243)
@@ -28,10 +30,11 @@ class RasterError(RuntimeError):
 
 
 def rasterize_first_page(pdf_bytes: bytes, target_height: int = 1200, timeout: int = 20) -> bytes:
-    """PNG of page 1, rendered in a resource-limited child process (see raster_worker.py)."""
+    """PNG of page 1, rendered in a resource-limited child process (see raster_worker.py). The child parses an untrusted
+    PDF, so it gets an allowlisted environment: this service's API keys are not inherited."""
     try:
         r = subprocess.run([sys.executable, "-m", "src.cv.raster_worker", str(target_height)], input=pdf_bytes,
-                           capture_output=True, timeout=timeout, cwd=_ROOT)
+                           capture_output=True, timeout=timeout, cwd=_ROOT, env=scrubbed_child_env())
     except subprocess.TimeoutExpired:
         raise RasterError("timeout")
     if r.returncode != 0 or not r.stdout.startswith(b"\x89PNG"):

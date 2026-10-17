@@ -364,7 +364,7 @@ class BrowserLaunchArgs(BaseModel):
 
 	env: dict[str, str | float | bool] | None = Field(
 		default=None,
-		description='Extra environment variables to set when launching the browser. If None, inherits from the current process.',
+		description='The complete environment of the launched browser process (nothing is inherited). If None, inherits from the current process.',
 	)
 	executable_path: str | Path | None = Field(
 		default=None,

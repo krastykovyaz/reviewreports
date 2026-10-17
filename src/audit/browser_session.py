@@ -3,12 +3,26 @@ audit. Reuses src.environment.browser directly rather than the agent/tool
 plumbing, since a URL scan is a deterministic pipeline, not an agent task.
 """
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
 from src.audit.http_client import SSRFBlocked, assert_public_url
 from src.environment.browser import Browser
 from src.environment.browser.browser.profile import BrowserProfile
+from src.service.child_env import scrubbed_child_env
+
+
+def chromium_sandbox_enabled() -> bool:
+    """Whether Chromium's own sandbox is used. On by default for an unprivileged user; off as root, where Chrome refuses to
+    start with it ("Running as root without --no-sandbox is not supported"). REVIEWREPORTS_CHROMIUM_SANDBOX=on|off forces
+    either way (e.g. off in a container without user namespaces, on to make a root run fail loudly instead of unsandboxed)."""
+    forced = os.getenv("REVIEWREPORTS_CHROMIUM_SANDBOX", "").strip().lower()
+    if forced in ("on", "1", "true", "yes"):
+        return True
+    if forced in ("off", "0", "false", "no"):
+        return False
+    return getattr(os, "geteuid", lambda: 0)() != 0
 
 
 def _installed_chromium_path() -> Optional[str]:
@@ -71,10 +85,14 @@ async def audit_page(url: str, headless: bool = True) -> AsyncIterator:
         # chromium_sandbox defaults to `not CONFIG.IN_DOCKER`, i.e. True on
         # bare metal — but Chrome's sandbox unconditionally refuses to
         # initialize when the parent process is root, Docker or not:
-        # "Running as root without --no-sandbox is not supported." This
-        # service (like the rest of this host) runs as root, so explicitly
-        # disable it rather than relying on Docker detection.
-        chromium_sandbox=False,
+        # "Running as root without --no-sandbox is not supported." Run as root
+        # (as this host used to) it has to be off, so decide from the actual
+        # user instead of relying on Docker detection: sandboxed whenever the
+        # service runs unprivileged (see chromium_sandbox_enabled).
+        chromium_sandbox=chromium_sandbox_enabled(),
+        # The browser renders arbitrary sites: it gets an allowlisted
+        # environment, never this process's API keys (see src/service/child_env.py).
+        env=scrubbed_child_env(),
     )
     await browser.start()
     try:
