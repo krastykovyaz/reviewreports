@@ -121,7 +121,9 @@ PAGE_FACTS_JS = """() => {
       wordpress: !!q('link[href*="wp-content"], script[src*="wp-content"], meta[name="generator"][content*="WordPress"]'),
     },
     generator: meta('generator'),
-    cookies: document.cookie ? document.cookie.split(';').map((c) => c.split('=')[0].trim()).filter(Boolean) : [],
+    // document.cookie throws SecurityError in a sandboxed document (a page served with `Content-Security-Policy: sandbox`, as tsech.online
+    // serves every shared card): one unreadable property must not fail the whole audit.
+    cookies: (() => { try { return document.cookie ? document.cookie.split(';').map((c) => c.split('=')[0].trim()).filter(Boolean) : [] } catch (e) { return [] } })(),
     privacyLink: !!links.find((a) => /privacy|policy|confidential/i.test(txt(a) + ' ' + a.href)),
     termsLink: !!links.find((a) => /terms|conditions|legal/i.test(txt(a) + ' ' + a.href)),
     cookieNotice: /cookie|consent/i.test(bodyText),
