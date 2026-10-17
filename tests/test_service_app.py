@@ -346,3 +346,71 @@ def test_an_allowed_model_still_creates_the_job(client, monkeypatch):
     monkeypatch.setattr(app_module, "validate_network_input", _noop_async)
     r = client.post("/reports", json={"url": "https://example.com", "kind": "website_audit", "model_name": "openai/gpt-4o"})
     assert r.status_code == 200 and _job_count() == 1
+
+
+# ── what a person sees of a failure is a short generic message; the detail stays in the log ──
+
+_LEAKY = "[Errno 111] connect to /root/reviewreports/workdir/.env at 10.1.2.3:5432 failed: sk-deepseek-secret"
+
+
+def _fail_sync(client, monkeypatch, exc, caplog):
+    """Submits a job whose generation raises `exc`; the TestClient runs the background task before returning."""
+    async def boom(kind, input, model_name=None, lang="en"):
+        raise exc
+
+    monkeypatch.setattr(app_module, "generate_report", boom)
+    with caplog.at_level("ERROR", logger="reviewreports"):
+        return client.post("/reports", json={"url": "https://example.com"}).json()["id"]
+
+
+@pytest.mark.parametrize("exc", [RuntimeError(_LEAKY), OSError(_LEAKY), ValueError(_LEAKY), KeyError(_LEAKY)])
+def test_a_failed_job_shows_a_generic_error_everywhere(client, monkeypatch, caplog, exc):
+    job_id = _fail_sync(client, monkeypatch, exc, caplog)
+    for body in (client.get(f"/reports/{job_id}").json()["error"], client.get(f"/view/{job_id}").text, client.get(f"/reports/{job_id}.md").text):
+        assert "10.1.2.3" not in body and "/root/" not in body and "sk-deepseek" not in body and "Errno" not in body
+    err = client.get(f"/reports/{job_id}").json()["error"]
+    assert err == "The report could not be generated. Please try again in a few minutes."
+    assert _LEAKY in caplog.text  # the detail went to the server log, with its traceback
+    assert client.get(f"/reports/{job_id}.md").status_code == 422
+
+
+def test_network_failures_read_the_same_whether_blocked_or_unreachable(client, monkeypatch, caplog):
+    import httpx
+    from src.audit.http_client import SSRFBlocked
+    msgs = set()
+    for exc in (SSRFBlocked("Refusing to fetch a non-public address: intranet.corp -> 10.0.0.5"), httpx.ConnectError("[Errno 111] Connection refused 10.0.0.5:8080"),
+                httpx.ReadTimeout("timed out"), ConnectionResetError("reset by 10.0.0.5")):
+        job_id = _fail_sync(client, monkeypatch, exc, caplog)
+        msgs.add(client.get(f"/reports/{job_id}").json()["error"])
+    assert len(msgs) == 1 and "10.0.0.5" not in msgs.pop()
+
+
+@pytest.mark.parametrize("exc_type", [ImportError, OSError])
+def test_pdf_503_does_not_echo_the_library_error(client, monkeypatch, exc_type):
+    def raise_unavailable(report, include_footer=True):
+        raise exc_type("cannot load library '/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0'")
+
+    monkeypatch.setitem(app_module.RENDERERS, "pdf", raise_unavailable)
+    job_id = client.post("/reports", json={"url": "https://example.com"}).json()["id"]
+    resp = client.get(f"/reports/{job_id}.pdf")
+    assert resp.status_code == 503 and "libgobject" not in resp.text and "/usr/lib" not in resp.text
+
+
+def test_the_cv_pdf_503_does_not_echo_the_library_error(client, monkeypatch):
+    def broken(profile, template, photo=None):
+        raise OSError("cannot load library '/usr/lib/libpango-1.0.so.0'")
+
+    monkeypatch.setattr(app_module, "render_cv_pdf", broken)
+    cv = client.post("/cv", json={"name": "A B", "contact": {"email": "a@b.co"}}).json()["id"]
+    resp = client.get(f"/cv/{cv}.pdf")
+    assert resp.status_code == 503 and "libpango" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_code_review_url_rejection_does_not_name_the_resolved_address(monkeypatch):
+    from src.audit import http_client
+    from src.service.input_policy import InputRejected, validate_network_input
+    monkeypatch.setattr(http_client, "_resolve_all_sync", lambda host: ["10.9.8.7"])
+    with pytest.raises(InputRejected) as e:
+        await validate_network_input("code_review", "https://intranet.corp.example/repo.git")
+    assert "10.9.8.7" not in str(e.value) and "intranet" not in str(e.value)

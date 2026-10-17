@@ -38,11 +38,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 
+from src.audit.http_client import SSRFBlocked
 from src.cv.extract import edit_cv_profile, extract_cv_profile
 from src.cv.doc_text import DocError, extract_document_text
 from src.cv.docx_preview import docx_to_html
@@ -335,6 +337,15 @@ def _job_response(job: dict) -> JobResponse:
     return JobResponse(id=job["id"], kind=job["kind"], subject=job["subject"], lang=job["lang"], status=job["status"], report=report, error=job["error"])
 
 
+def _public_job_error(exc: BaseException) -> str:
+    """The one-line reason a person sees (at /view/{id} and GET /reports/{id}) for a job that failed. The exception's own text -
+    socket errors, file paths, library messages, a resolver's answer about an internal host - goes to the server log only.
+    An unreachable site and a refused (non-public) one read the same, so the message can't be used to probe the network."""
+    if isinstance(exc, (SSRFBlocked, httpx.HTTPError, ConnectionError, asyncio.TimeoutError)):
+        return "We could not reach that address. Check that it is a public website and try again."
+    return "The report could not be generated. Please try again in a few minutes."
+
+
 async def _run_job(job_id: str, kind: str, url: str, model_name: Optional[str], lang: str) -> None:
     try:
         await _acquire_or_reject(_audit_gate)
@@ -355,7 +366,8 @@ async def _run_job(job_id: str, kind: str, url: str, model_name: Optional[str], 
         except asyncio.TimeoutError:
             await _store.mark_failed(job_id, f"The check took longer than {int(_JOB_TIMEOUT_SEC)} seconds and was stopped. Please try again.")
         except Exception as exc:  # noqa: BLE001 - persist any failure onto the job record
-            await _store.mark_failed(job_id, str(exc))
+            logger.exception("job %s (%s) failed", job_id, kind)
+            await _store.mark_failed(job_id, _public_job_error(exc))
     finally:
         _audit_gate.release()
 
@@ -411,8 +423,9 @@ async def get_report_rendered(job_id: str, extension: str, footer: str = "1"):
     report = Report.model_validate(json.loads(job["report_json"]))
     try:
         rendered = await _render_in_pool(RENDERERS[output_format], report, include_footer=footer != "0")
-    except (ImportError, OSError) as exc:  # OSError: WeasyPrint without system Pango/GObject
-        raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
+    except (ImportError, OSError):  # OSError: WeasyPrint without system Pango/GObject
+        logger.exception("PDF rendering is unavailable")
+        raise HTTPException(status_code=503, detail="PDF rendering is unavailable on this server")
 
     if output_format in _BINARY_FORMATS:
         return Response(content=rendered, media_type=_MEDIA_TYPES[output_format])
@@ -795,8 +808,9 @@ async def get_cv_rendered(cv_id: str, extension: str, template: Optional[str] = 
             return await _render_in_pool(render_cv_pdf, profile, chosen_template, photo_uri)
         try:
             rendered = await _cached_derived(cv_id, row, f"pdf-{chosen_template}", "pdf", build)
-        except (ImportError, OSError) as exc:  # OSError: WeasyPrint without system Pango/GObject
-            raise HTTPException(status_code=503, detail=f"PDF rendering is unavailable on this server: {exc}")
+        except (ImportError, OSError):  # OSError: WeasyPrint without system Pango/GObject
+            logger.exception("PDF rendering is unavailable")
+            raise HTTPException(status_code=503, detail="PDF rendering is unavailable on this server")
     else:
         rendered = render_cv_markdown(profile)
 

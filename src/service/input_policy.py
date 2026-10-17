@@ -57,7 +57,8 @@ async def validate_network_input(kind: str, value: str) -> None:
         try:
             await assert_public_url(value)
         except SSRFBlocked as exc:
-            raise InputRejected(str(exc)) from exc
+            # Not str(exc): that names the address the host resolved to, which would let a caller probe internal DNS.
+            raise InputRejected("That address is not a public website.") from exc
         return
 
     if kind in LOCAL_PATH_KINDS and not _is_http_url(value):
