@@ -6,6 +6,10 @@ from typing import Dict, List, Optional
 
 import httpx
 
+MAX_BODY_BYTES = 3 * 1024 * 1024  # of any one page / robots.txt / sitemap: the rest of a bigger body is never read
+FETCH_DEADLINE_SEC = 30.0         # wall clock for one whole fetch (the per-read timeout alone lets a slow drip run forever)
+MAX_REDIRECTS = 10
+
 
 @dataclass
 class FetchResult:
@@ -13,6 +17,7 @@ class FetchResult:
     headers: Dict[str, str]
     text: str
     url: str
+    truncated: bool = False  # the body was longer than MAX_BODY_BYTES and `text` is only its beginning
 
 
 class SSRFBlocked(Exception):
@@ -85,12 +90,58 @@ async def _guard_request(request: httpx.Request) -> None:
     await assert_public_host(request.url.host)
 
 
-async def fetch(url: str, timeout: float = 15.0) -> FetchResult:
+async def open_response(client: httpx.AsyncClient, method: str, url: str, max_redirects: int = MAX_REDIRECTS) -> httpx.Response:
+    """Sends the request and follows redirects by hand WITHOUT reading any body; returns the final response with its body
+    still unread (headers only) - the caller reads what it wants and must aclose() it.
+
+    httpx's own redirect following reads every intermediate response in full (`await response.aread()`), so a hostile
+    server could answer a redirect with an endless body. Here each redirect response is closed unread. `client` must have
+    follow_redirects=False; every hop still goes through the client's request hooks (the SSRF guard)."""
+    request = client.build_request(method, url)
+    for _ in range(max_redirects + 1):
+        response = await client.send(request, stream=True)
+        if response.next_request is None:
+            return response
+        request = response.next_request
+        await response.aclose()
+    raise httpx.TooManyRedirects(f"More than {max_redirects} redirects", request=request)
+
+
+async def _read_capped(response: httpx.Response, max_bytes: int) -> tuple:
+    """(body bytes, truncated): stops reading one byte past `max_bytes` instead of buffering whatever the server sends.
+    (Content-Encoding is decoded as it streams, so the cap is on decoded bytes; a hostile gzip can still inflate one
+    network chunk - 64 KB - to some tens of MB before the cap is seen, which is bounded, unlike the whole body.)"""
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body += chunk
+        if len(body) > max_bytes:
+            return bytes(body[:max_bytes]), True
+    return bytes(body), False
+
+
+async def _fetch(url: str, timeout: float, max_bytes: int) -> FetchResult:
+    # Identity encoding: an honest server then sends the plain bytes the cap counts.
     async with httpx.AsyncClient(
-        follow_redirects=True, timeout=timeout, event_hooks={"request": [_guard_request]}
+        follow_redirects=False, timeout=timeout, headers={"Accept-Encoding": "identity"}, event_hooks={"request": [_guard_request]}
     ) as client:
-        resp = await client.get(url)
-        return FetchResult(status_code=resp.status_code, headers=dict(resp.headers), text=resp.text, url=str(resp.url))
+        resp = await open_response(client, "GET", url)
+        try:
+            body, truncated = await _read_capped(resp, max_bytes)
+            text = body.decode(resp.encoding or "utf-8", errors="replace")
+            return FetchResult(status_code=resp.status_code, headers=dict(resp.headers), text=text, url=str(resp.url), truncated=truncated)
+        finally:
+            await resp.aclose()
+
+
+async def fetch(url: str, timeout: float = 15.0, max_bytes: int = MAX_BODY_BYTES, deadline: Optional[float] = None) -> FetchResult:
+    """GET `url`, following redirects (each hop SSRF-checked), reading at most `max_bytes` of the body and taking at
+    most `deadline` seconds in all (default FETCH_DEADLINE_SEC). Raises httpx.HTTPError (a timeout is an httpx.ReadTimeout)
+    or SSRFBlocked."""
+    deadline = FETCH_DEADLINE_SEC if deadline is None else deadline
+    try:
+        return await asyncio.wait_for(_fetch(url, timeout, max_bytes), timeout=deadline)
+    except asyncio.TimeoutError:
+        raise httpx.ReadTimeout(f"Fetching {url} took longer than {deadline:g} seconds")
 
 
 async def try_fetch(url: str, timeout: float = 10.0) -> Optional[FetchResult]:

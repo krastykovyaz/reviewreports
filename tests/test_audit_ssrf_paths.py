@@ -43,19 +43,20 @@ async def test_internal_links_are_never_requested_or_reported(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_mix_only_reports_on_the_public_links(monkeypatch):
-    class R:
-        status_code = 200
-
-    async def fake_head(self, url, **kw):
-        # Simulates the real client for the public link; the guard hook is exercised by the test above.
-        return R()
-
     import httpx
-    monkeypatch.setattr(httpx.AsyncClient, "head", fake_head)
-    monkeypatch.setattr("src.audit.collectors.links._guard_request", __import__("src.audit.http_client", fromlist=["x"])._guard_request)
+    from tests.helpers import mock_http
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200)
+
+    mock_http(monkeypatch, handler)  # the real guard hook runs in front of this transport
     p = await collect_broken_links(_facts("http://127.0.0.1:8001/docs", "https://example.com/"))
     text = " ".join((f.evidence or "") + (f.detail or "") for f in p.findings)
     assert "127.0.0.1" not in text
+    assert seen and all("127.0.0.1" not in u for u in seen)  # the internal link never reached the transport
+    assert p.score == 10.0
 
 
 # ── the browser's final destination ──

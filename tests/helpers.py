@@ -93,3 +93,33 @@ def _jpeg(size=(800, 400), color=(200, 40, 40), **kw) -> bytes:
 
 def _up(client, data, name="My CV.pdf"):
     return client.post("/cv/from-file", files={"file": (name, data, "application/octet-stream")}).json()
+
+
+import httpx as _httpx
+_REAL_ASYNC_CLIENT = _httpx.AsyncClient
+
+
+def mock_http(monkeypatch, handler):
+    """Every httpx.AsyncClient the audit code creates talks to `handler` through a real httpx.MockTransport (so redirects,
+    streaming, closing and event hooks behave as in production), and DNS answers a public address for names while IP
+    literals resolve to themselves (so the SSRF guard still sees 10.0.0.1 as 10.0.0.1)."""
+    import ipaddress
+    import httpx
+    from src.audit import http_client
+
+    real = _REAL_ASYNC_CLIENT  # not httpx.AsyncClient: a second mock_http in one test must replace the first, not wrap it
+
+    class Mocked(real):
+        def __init__(self, *a, **kw):
+            kw.pop("transport", None)
+            super().__init__(*a, transport=httpx.MockTransport(handler), **kw)
+
+    def resolve(host):
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+            return [host.strip("[]")]
+        except ValueError:
+            return ["93.184.216.34"]
+
+    monkeypatch.setattr(httpx, "AsyncClient", Mocked)
+    monkeypatch.setattr(http_client, "_resolve_all_sync", resolve)
