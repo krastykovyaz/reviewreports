@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from src.audit.http_client import SSRFBlocked, assert_public_url
+from src.audit.http_client import SSRFBlocked, assert_public_url, browser_request_allowed
 from src.environment.browser import Browser
 from src.environment.browser.browser.profile import BrowserProfile
 from src.service.child_env import scrubbed_child_env
@@ -93,6 +93,9 @@ async def audit_page(url: str, headless: bool = True) -> AsyncIterator:
         # The browser renders arbitrary sites: it gets an allowlisted
         # environment, never this process's API keys (see src/service/child_env.py).
         env=scrubbed_child_env(),
+        # Not just the start URL: every request the page makes (subresources, iframes, form posts, redirect hops) is
+        # checked against the same rules before it is sent (see browser_request_allowed).
+        request_guard=browser_request_allowed,
     )
     await browser.start()
     try:

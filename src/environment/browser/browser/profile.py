@@ -1,6 +1,6 @@
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from enum import Enum
 from functools import cache
 from pathlib import Path
@@ -561,6 +561,12 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 
 	# custom options we provide that aren't native playwright kwargs
 	disable_security: bool = Field(default=False, description='Disable browser security features.')
+	request_guard: Callable[[str], Awaitable[bool]] | None = Field(
+		default=None,
+		exclude=True,
+		description='Async predicate called with the URL of EVERY request the browser makes (navigations, redirect hops, subresources, iframes, form posts) '
+		'before it is sent; False (or an exception) fails the request with BlockedByClient. None = no filtering. The session refuses to start if it cannot install the filter.',
+	)
 	deterministic_rendering: bool = Field(default=False, description='Enable deterministic rendering flags.')
 	allowed_domains: list[str] | set[str] | None = Field(
 		default=None,

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, Union, cast
@@ -228,6 +229,7 @@ class BrowserSession(BaseModel):
 		headers: dict[str, str] | None = None,
 		# From BrowserLaunchArgs
 		env: dict[str, str | float | bool] | None = None,
+		request_guard: Callable[[str], Awaitable[bool]] | None = None,
 		executable_path: str | Path | None = None,
 		headless: bool | None = None,
 		args: list[str] | None = None,
@@ -1400,6 +1402,8 @@ class BrowserSession(BaseModel):
 
 			# Enable proxy authentication handling if configured
 			await self._setup_proxy_auth()
+			# Filter every request the browser makes through the profile's request_guard, if one is set
+			await self._setup_request_guard()
 
 			# Verify the session is working
 			try:
@@ -1435,6 +1439,76 @@ class BrowserSession(BaseModel):
 			raise RuntimeError(f'Failed to establish CDP connection to browser: {e}') from e
 
 		return self
+
+	async def _setup_request_guard(self) -> None:
+		"""Pause every request of every target at the Request stage and let browser_profile.request_guard decide.
+
+		Without this only the URL given to goto() is ever vetted; the page's subresources, iframes, form posts and script
+		fetches (and the hops of a redirect, each a new paused request) would go wherever the page says. Allowed requests
+		are continued, the rest fail with BlockedByClient. FAIL-CLOSED: a guard that raises blocks, and failing to install
+		the filter on the page raises (the session must not run unfiltered). Child targets (out-of-process iframes, popups,
+		workers) get Fetch enabled when they attach; a request such a target makes in the instant before that lands is not
+		seen (residual: Target.setAutoAttach is not set to wait for the debugger here)."""
+		guard = self.browser_profile.request_guard
+		if guard is None:
+			return
+		assert self._cdp_client_root
+		client = self._cdp_client_root
+		proxy_cfg = self.browser_profile.proxy
+		patterns = {
+			'handleAuthRequests': bool(proxy_cfg and proxy_cfg.username and proxy_cfg.password),
+			'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}],
+		}
+		pending: set = set()
+
+		def _on_paused(event: RequestPausedEvent, session_id: SessionID | None = None):
+			request_id = event.get('requestId')
+			if not request_id:
+				return
+			url = (event.get('request') or {}).get('url') or ''
+
+			async def _decide():
+				try:
+					allowed = await guard(url) is True
+				except Exception as e:
+					self.logger.debug(f'request_guard failed for {url[:200]}: {type(e).__name__}: {e}')
+					allowed = False
+				try:
+					if allowed:
+						await client.send.Fetch.continueRequest(params={'requestId': request_id}, session_id=session_id)
+					else:
+						self.logger.debug(f'Blocked request to {url[:200]}')
+						await client.send.Fetch.failRequest(params={'requestId': request_id, 'errorReason': 'BlockedByClient'}, session_id=session_id)
+				except Exception as e:
+					self.logger.debug(f'Fetch answer for {request_id} failed: {type(e).__name__}: {e}')
+
+			task = asyncio.create_task(_decide())
+			pending.add(task)
+			task.add_done_callback(pending.discard)
+
+		def _on_attached(event: AttachedToTargetEvent, session_id: SessionID | None = None):
+			sid = event.get('sessionId')
+			if not sid:
+				return
+
+			async def _enable():
+				try:
+					await client.send.Fetch.enable(params=patterns, session_id=sid)
+				except Exception as e:
+					self.logger.debug(f'Fetch.enable (request guard) on attached session failed: {type(e).__name__}: {e}')
+
+			task = asyncio.create_task(_enable())
+			pending.add(task)
+			task.add_done_callback(pending.discard)
+
+		client.register.Fetch.requestPaused(_on_paused)
+		client.register.Target.attachedToTarget(_on_attached)
+		if not self.agent_focus:
+			raise RuntimeError('Cannot install the request guard: no page session')
+		try:
+			await client.send.Fetch.enable(params=patterns, session_id=self.agent_focus.session_id)
+		except Exception as e:
+			raise RuntimeError(f'Cannot install the request guard on the page: {e}') from e
 
 	async def _setup_proxy_auth(self) -> None:
 		"""Enable CDP Fetch auth handling for authenticated proxy, if credentials provided.

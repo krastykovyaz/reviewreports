@@ -1,6 +1,8 @@
 import asyncio
 import ipaddress
+import re
 import socket
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -74,6 +76,78 @@ async def assert_public_url(url: str) -> None:
     if parsed.scheme not in ("http", "https"):
         raise SSRFBlocked(f"Refusing to fetch a non-http(s) URL: {url!r}")
     await assert_public_host(parsed.host)
+
+
+# ---- the browser's own requests ------------------------------------------------------------
+# What a page may load: network schemes (http/https) are judged by where the host really is; data:/blob:/about: never leave
+# the browser. Everything else (file:, ftp:, chrome:, ...) is refused.
+_BROWSER_LOCAL_SCHEMES = ("data", "blob", "about")
+_DNS_TTL_SEC = 30.0
+_DNS_TIMEOUT_SEC = 3.0
+_DNS_CACHE_MAX = 1024
+_dns_cache: Dict[str, tuple] = {}          # host -> (expires_at, addresses | None when it did not resolve)
+_dns_inflight: Dict[tuple, "asyncio.Future"] = {}  # (loop, host) -> lookup: a future must only ever be awaited on its own loop
+# An IPv4 in any of the spellings a browser accepts (decimal 2130706433, hex 0x7f.1, dotted octal) or any IPv6 literal.
+_IP_LITERALISH = re.compile(r"^(?:0x[0-9a-f]*|[0-9]+)(?:\.(?:0x[0-9a-f]*|[0-9]+))*$|^[0-9a-f:.]*:[0-9a-f:.]*$", re.I)
+
+
+async def _lookup(host: str) -> Optional[List[str]]:
+    """All addresses of `host`, or None if it does not resolve (or DNS is too slow). Off the event loop, bounded in time."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_resolve_all_sync, host), timeout=_DNS_TIMEOUT_SEC)
+    except (SSRFBlocked, asyncio.TimeoutError, OSError):
+        return None
+
+
+async def _resolve_cached(host: str) -> Optional[List[str]]:
+    """_lookup with a short-lived cache (a page makes dozens of requests to the same few hosts) that also merges
+    concurrent lookups of one host into one."""
+    now = time.monotonic()
+    hit = _dns_cache.get(host)
+    if hit and hit[0] > now:
+        return hit[1]
+    key = (asyncio.get_running_loop(), host)
+    pending = _dns_inflight.get(key)
+    if pending is None:
+        pending = _dns_inflight[key] = asyncio.ensure_future(_lookup(host))
+        def _done(task, key=key, host=host):
+            _dns_inflight.pop(key, None)
+            if not task.cancelled() and task.exception() is None:
+                if len(_dns_cache) >= _DNS_CACHE_MAX:
+                    _dns_cache.clear()
+                _dns_cache[host] = (time.monotonic() + _DNS_TTL_SEC, task.result())
+        pending.add_done_callback(_done)
+    return await asyncio.shield(pending)
+
+
+async def browser_request_allowed(url: str) -> bool:
+    """May the browser send this request? The decision for ONE request, called for every navigation, redirect hop,
+    subresource, iframe and form post (BrowserProfile.request_guard); never raises.
+
+    - scheme other than http/https/data/blob/about: no;
+    - an address literal, or a name resolving to ANY non-public address (same rules as the page fetch, _is_unsafe_address): no;
+    - a name that does not resolve: yes if it is an ordinary public-looking name (the request will fail on its own anyway),
+      no if it is shaped like an IP literal in an exotic spelling that this resolver could not read (fail closed).
+
+    Residual gap, accepted: Chromium resolves the name again when it connects, so a DNS-rebinding host can answer public
+    here and internal there (a window of milliseconds, and the page's content is only used if the final URL is public).
+    The deployment additionally denies the private ranges at the network layer, which closes it."""
+    try:
+        parsed = httpx.URL(url)
+        scheme = parsed.scheme.lower()
+        if scheme in _BROWSER_LOCAL_SCHEMES:
+            return True
+        if scheme not in ("http", "https"):
+            return False
+        host = parsed.host.strip("[]").lower()
+        if not host or host in _BLOCKED_HOSTNAMES:
+            return False
+        addresses = await _resolve_cached(host)
+        if addresses is None:
+            return not _IP_LITERALISH.match(host)
+        return not any(_is_unsafe_address(a) for a in addresses)
+    except Exception:
+        return False
 
 
 async def _guard_request(request: httpx.Request) -> None:
