@@ -374,6 +374,13 @@ def test_from_text_shows_error_on_extraction_failure(client, monkeypatch):
     assert "unparseable garbage" in resp.text  # pasted text preserved for retry
 
 
+@pytest.mark.parametrize("blank", ["   ", "\n\n\t ", "\u00a0"])
+def test_from_text_form_never_sends_whitespace_to_the_paid_model(client, monkeypatch, blank):
+    async def never(text, model_name): raise AssertionError("the model must not be called for blank text")
+    monkeypatch.setattr(app_module, "extract_cv_profile", never)
+    assert client.post("/cv-builder/from-text", data={"text": blank}).status_code == 422
+
+
 def test_from_text_requires_text(client):
     resp = client.post("/cv-builder/from-text", data={})
     assert resp.status_code == 422

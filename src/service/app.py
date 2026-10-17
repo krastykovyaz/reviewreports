@@ -378,9 +378,10 @@ async def create_report(request: CreateReportRequest, background_tasks: Backgrou
     except InputRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    model_name = _check_model(request.model_name)  # before the job exists: a refused model must not leave a pending job behind
     lang = normalize_lang(request.lang)
     job_id = await _store.create_job(kind=request.kind, subject=request.url, lang=lang)
-    background_tasks.add_task(_run_job, job_id, request.kind, request.url, _check_model(request.model_name), lang)
+    background_tasks.add_task(_run_job, job_id, request.kind, request.url, model_name, lang)
     job = await _store.get_job(job_id)
     return _job_response(job)
 
@@ -859,6 +860,7 @@ async def submit(
 ):
     if not _kind_allowed(kind):
         raise HTTPException(status_code=400, detail=f"Unsupported report kind: {kind}")
+    chosen_model = _check_model(model_name)  # first: a refused model must leave neither a pending job nor an uploaded file behind
     lang = normalize_lang(lang)
     kind_label = t_chrome(_KIND_LABEL_KEYS[kind], lang)
 
@@ -883,7 +885,7 @@ async def submit(
             raise HTTPException(status_code=400, detail=str(exc))
 
     job_id = await _store.create_job(kind=kind, subject=subject, lang=lang)
-    background_tasks.add_task(_run_job, job_id, kind, subject, _check_model(model_name), lang)
+    background_tasks.add_task(_run_job, job_id, kind, subject, chosen_model, lang)
     return RedirectResponse(url=f"/view/{job_id}", status_code=303)
 
 
@@ -1110,6 +1112,8 @@ async def cv_builder_form(request: Request, lang: str = "en"):
 async def cv_builder_from_text(request: Request, text: str = Form(..., max_length=20_000), model_name: str = Form(""), lang: str = Form("en")):
     lang = normalize_lang(lang)
     chosen_model = _check_model(model_name)
+    if not text.strip():  # as in POST /cv/from-text: whitespace is not worth a paid model call
+        raise HTTPException(status_code=422, detail="text is empty")
     # The same ceiling as /cv/from-text: this route used to call the model with no size cap and outside the concurrency gate.
     try:
         await _acquire_or_reject(_llm_gate)

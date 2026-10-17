@@ -314,3 +314,35 @@ async def test_rendered_before_done_is_409(client):
     job_id = await app_module._store.create_job(kind="website_audit", subject="https://example.com")
     resp = client.get(f"/reports/{job_id}.md")
     assert resp.status_code == 409
+
+
+# ── a refused model must not leave a pending job (or an uploaded file) behind ──
+
+def _job_count():
+    import sqlite3
+    with sqlite3.connect(app_module._store.db_path) as db:
+        return db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+
+def test_reports_with_a_refused_model_is_400_and_creates_no_job(client):
+    r = client.post("/reports", json={"url": "https://example.com", "kind": "website_audit", "model_name": "deepseek/deepseek-reasoner"})
+    assert r.status_code == 400 and _job_count() == 0
+
+
+def test_submit_with_a_refused_model_is_400_and_creates_no_job(client):
+    r = client.post("/submit", data={"kind": "website_audit", "input_value": "https://example.com", "model_name": "deepseek/deepseek-reasoner"}, follow_redirects=False)
+    assert r.status_code == 400 and _job_count() == 0
+
+
+def test_submit_of_a_file_with_a_refused_model_stores_neither_job_nor_file(client, tmp_path):
+    r = client.post("/submit", data={"kind": "resume_review", "model_name": "deepseek/deepseek-reasoner"},
+                    files={"file": ("cv.pdf", b"%PDF-1.4 hello", "application/pdf")}, follow_redirects=False)
+    assert r.status_code == 400 and _job_count() == 0
+    assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_an_allowed_model_still_creates_the_job(client, monkeypatch):
+    monkeypatch.setenv("PUBLIC_MODELS", "openai/gpt-4o")
+    monkeypatch.setattr(app_module, "validate_network_input", _noop_async)
+    r = client.post("/reports", json={"url": "https://example.com", "kind": "website_audit", "model_name": "openai/gpt-4o"})
+    assert r.status_code == 200 and _job_count() == 1
