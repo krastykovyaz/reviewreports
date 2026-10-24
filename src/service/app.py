@@ -357,8 +357,9 @@ async def _run_job(job_id: str, kind: str, url: str, model_name: Optional[str], 
         await _store.mark_failed(job_id, "Server is busy with other checks right now - please try again in a minute.")
         return
     try:
-        await _store.mark_running(job_id)
         try:
+            # Inside the try: a database error here must fail the job, not leave it "pending" for the person polling it.
+            await _store.mark_running(job_id)
             # Sub-steps have their own timeouts, but a hang in the browser or a model call would otherwise hold one of the
             # two audit slots until the service restarted. Cancelling runs the browser session's cleanup.
             report = await asyncio.wait_for(generate_report(kind=kind, input=url, model_name=model_name, lang=lang), timeout=_JOB_TIMEOUT_SEC)

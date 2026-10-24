@@ -251,13 +251,16 @@ class DownloadsWatchdog(BaseWatchdog):
 					return
 				# Ensure path is properly expanded (~ -> absolute path)
 				expanded_downloads_path = Path(downloads_path).expanduser().resolve()
-				await cdp_client.send.Browser.setDownloadBehavior(
-					params={
+				if self.browser_session.browser_profile.accept_downloads:
+					download_behavior: dict[str, Any] = {
 						'behavior': 'allow',
 						'downloadPath': str(expanded_downloads_path),  # Use expanded absolute path
 						'eventsEnabled': True,
 					}
-				)
+				else:
+					# The browser itself refuses every download: nothing is written, whatever the page does
+					download_behavior = {'behavior': 'deny', 'eventsEnabled': True}
+				await cdp_client.send.Browser.setDownloadBehavior(params=download_behavior)  # type: ignore[arg-type]
 
 				# Register the handlers with CDP
 				cdp_client.register.Browser.downloadWillBegin(download_will_begin_handler)  # type: ignore[arg-type]

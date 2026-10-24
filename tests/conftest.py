@@ -40,3 +40,19 @@ def _isolated_stores(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(app_module.model_manager, "initialize", _no_model_init)
+
+
+@pytest.fixture(autouse=True)
+def _no_browser_temp_dirs_left_behind():
+    """BrowserProfile() makes /tmp/browser-use-downloads-* the moment it is built (and a profile dir when one is launched), and
+    nothing deletes them: tests that build profiles must not fill the disk of the machine that runs them."""
+    import glob
+    import shutil
+    import tempfile
+
+    patterns = [os.path.join(tempfile.gettempdir(), p) for p in ("browser-use-downloads-*", "browser-use-user-data-dir-*")]
+    before = {path for pattern in patterns for path in glob.glob(pattern)}
+    yield
+    for pattern in patterns:
+        for path in set(glob.glob(pattern)) - before:
+            shutil.rmtree(path, ignore_errors=True)

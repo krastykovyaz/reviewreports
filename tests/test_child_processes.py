@@ -73,7 +73,9 @@ async def test_audit_page_passes_the_sandbox_choice_and_a_scrubbed_env(monkeypat
     seen = {}
 
     class FakeBrowser:
+        crashed = False
         def __init__(self, **kw): seen.update(kw)
+        def browser_process(self): return None
         async def start(self): pass
         async def stop(self): pass
         async def get_current_page(self):
@@ -158,3 +160,4 @@ def test_the_raster_child_gets_a_scrubbed_env_and_still_renders(monkeypatch):
     png = preview_card.rasterize_first_page(_cv_pdf())
     assert png.startswith(b"\x89PNG")
     assert seen["env"] and not set(_SECRETS) & set(seen["env"]) and "PATH" in seen["env"]
+

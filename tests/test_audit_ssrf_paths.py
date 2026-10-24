@@ -84,7 +84,9 @@ class _Page:
 
 def _fake_browser(page, calls):
     class FakeBrowser:
+        crashed = False
         def __init__(self, **kw): pass
+        def browser_process(self): return None
         async def start(self): pass
         async def stop(self): calls.append("stop")
         async def get_current_page(self): return page

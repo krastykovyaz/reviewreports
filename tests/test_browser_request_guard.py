@@ -130,19 +130,26 @@ def _paused(request_id, url, rtype="Script"):
 
 
 class _Wire:
-    """A real CDPClient with its websocket send replaced by a recorder; events go through its real registry."""
-    def __init__(self, fail_enable=False):
+    """A real CDPClient with its websocket send replaced by a recorder; events go through its real registry.
+    fail: (method, session id) pairs whose command raises, as a real client does when Chrome answers with an error."""
+    def __init__(self, fail_enable=False, fail=()):
         self.client = CDPClient("ws://unused")
         self.sent = []
         self.fail_enable = fail_enable
+        self.fail = set(fail)
 
         async def send_raw(method, params=None, session_id=None):
             self.sent.append((method, params, session_id))
             if self.fail_enable and method == "Fetch.enable":
                 raise RuntimeError("Fetch.enable: target closed")
+            if (method, session_id) in self.fail:
+                raise RuntimeError(f"{method}: target closed")
             return {}
 
         self.client.send_raw = send_raw
+
+    def on_session(self, sid):
+        return [m for m, p, s in self.sent if s == sid]
 
     def answers(self):
         return [(m, p["requestId"], s) for m, p, s in self.sent if m in ("Fetch.continueRequest", "Fetch.failRequest")]
@@ -209,15 +216,188 @@ async def test_a_guard_that_raises_or_answers_oddly_blocks_the_request():
         assert wire.answers() == [("Fetch.failRequest", "R1", "S1")]
 
 
+def _attached(sid, ttype, url="", waiting=True, target_id="T9", **info):
+    # the shape of Chrome's Target.attachedToTarget (cdp_use.cdp.target.events.AttachedToTargetEvent) under flat auto-attach
+    return {"sessionId": sid, "waitingForDebugger": waiting,
+            "targetInfo": {"targetId": target_id, "type": ttype, "title": "", "url": url, "attached": True, "canAccessOpener": False,
+                           "browserContextId": "CTX", **info}}
+
+
+GUARD_STEPS = ["Fetch.enable", "Network.enable", "Network.emulateNetworkConditionsByRule", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]
+
+
 @pytest.mark.asyncio
-async def test_child_targets_get_the_filter_when_they_attach(monkeypatch):
+@pytest.mark.parametrize("ttype, parent", [("iframe", "S1"), ("page", None)])
+async def test_a_new_target_is_guarded_while_it_waits_and_only_then_resumed(ttype, parent):
+    """An out-of-process iframe attaches to the PAGE's session (a cross-site frame's own requests start the moment it runs); a
+    popup attaches at browser level. Both arrive waiting for the debugger and must have Fetch, the websocket rule and the
+    auto-attach for their own children in place before Runtime.runIfWaitingForDebugger lets them execute."""
     wire = _Wire(); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
-    attached = {"sessionId": "OOPIF-3", "targetInfo": {"targetId": "T9", "type": "iframe", "title": "", "url": "https://ads.example/", "attached": True, "canAccessOpener": False},
-                "waitingForDebugger": False}
-    await wire.client.emit_event("Target.attachedToTarget", attached, None)
+    wire.sent.clear()
+    await wire.client.emit_event("Target.attachedToTarget", _attached("CHILD-1", ttype, "https://ads.example/"), parent)
     await wire.settle()
-    enables = [(p["patterns"], s) for m, p, s in wire.sent if m == "Fetch.enable"]
-    assert ([{"urlPattern": "*", "requestStage": "Request"}], "OOPIF-3") in enables
+    assert wire.on_session("CHILD-1") == GUARD_STEPS            # in this order, the resume last
+    by_method = {m: p for m, p, s in wire.sent if s == "CHILD-1"}
+    assert by_method["Fetch.enable"]["patterns"] == [{"urlPattern": "*", "requestStage": "Request"}]
+    assert by_method["Target.setAutoAttach"] == {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}
+    rules = by_method["Network.emulateNetworkConditionsByRule"]["matchedNetworkConditions"]
+    assert [r["urlPattern"] for r in rules] == ["ws://*:*/*", "wss://*:*/*"] and all(r["offline"] is True for r in rules)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broken", ["Fetch.enable", "Network.enable", "Network.emulateNetworkConditionsByRule", "Target.setAutoAttach"])
+async def test_a_target_that_cannot_be_guarded_is_never_resumed(broken):
+    wire = _Wire(fail=[(broken, "CHILD-1")]); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
+    wire.sent.clear()
+    await wire.client.emit_event("Target.attachedToTarget", _attached("CHILD-1", "iframe", "https://ads.example/"), "S1")
+    await wire.settle()
+    assert "Runtime.runIfWaitingForDebugger" not in wire.on_session("CHILD-1")
+
+
+WORKER_STEPS = ["Network.enable", "Network.emulateNetworkConditionsByRule", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_created_by_a_main_frame_gets_the_websocket_rule_and_is_then_resumed():
+    # (a dedicated worker has no Fetch domain: its requests are paused by the target that owns it.) parentFrameId == parentId
+    # is how Chrome says "created by that target's own main frame"; the worker was attached to the page's session
+    wire = _Wire(); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
+    wire.sent.clear()
+    await wire.client.emit_event("Target.attachedToTarget", _attached("W-1", "worker", "https://example.com/w.js", parentId="T1", parentFrameId="T1"), "S1")
+    await wire.settle()
+    assert wire.on_session("W-1") == WORKER_STEPS
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_fails_to_be_guarded_is_never_resumed():
+    wire = _Wire(fail=[("Network.emulateNetworkConditionsByRule", "W-1")]); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
+    wire.sent.clear()
+    await wire.client.emit_event("Target.attachedToTarget", _attached("W-1", "worker", parentId="T1", parentFrameId="T1"), "S1")
+    await wire.settle()
+    assert "Runtime.runIfWaitingForDebugger" not in wire.on_session("W-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ttype, info", [
+    ("worker", {"parentId": "T1", "parentFrameId": "FRAME-OF-A-CROSS-ORIGIN-IFRAME"}),   # a worker of a same-process iframe: its WebSocket escaped the rule
+    ("worker", {}),
+    ("shared_worker", {}),
+    ("service_worker", {}),
+])
+async def test_workers_that_cannot_be_filtered_are_left_paused(ttype, info):
+    wire = _Wire(); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
+    wire.sent.clear()
+    await wire.client.emit_event("Target.attachedToTarget", _attached("W-1", ttype, "https://example.com/w.js", **info), "S1")
+    await wire.settle()
+    assert wire.on_session("W-1") == []
+
+
+@pytest.mark.asyncio
+async def test_a_service_worker_script_is_refused_even_when_the_url_is_fine(monkeypatch):
+    _dns(monkeypatch, {})
+    wire = _Wire(); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
+    sw = _paused("R1", "https://example.com/sw.js", "Other"); sw["request"]["headers"] = {"Accept": "*/*", "Service-Worker": "script"}
+    await wire.client.emit_event("Fetch.requestPaused", sw, "S1")
+    await wire.client.emit_event("Fetch.requestPaused", _paused("R2", "https://example.com/app.js"), "S1")
+    await wire.settle()
+    assert sorted(wire.answers()) == [("Fetch.continueRequest", "R2", "S1"), ("Fetch.failRequest", "R1", "S1")]
+
+
+@pytest.mark.asyncio
+async def test_the_page_session_gets_fetch_the_websocket_rule_and_auto_attach_for_its_children():
+    wire = _Wire(); browser = _session(wire, browser_request_allowed); await browser._setup_request_guard()
+    assert wire.on_session("S1") == GUARD_STEPS[:4]             # nothing to resume: the page is not waiting
+    auto = next(p for m, p, s in wire.sent if m == "Target.setAutoAttach")
+    assert auto == {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broken", ["Network.enable", "Network.emulateNetworkConditionsByRule", "Target.setAutoAttach"])
+async def test_the_page_without_the_websocket_rule_or_child_cover_is_fatal(broken):
+    wire = _Wire(fail=[(broken, "S1")]); browser = _session(wire, browser_request_allowed)
+    with pytest.raises(RuntimeError, match="request guard"):
+        await browser._setup_request_guard()
+
+
+@pytest.mark.asyncio
+async def test_the_handlers_are_registered_after_anything_else_that_registers_them():
+    # cdp_use keeps one handler per event: _setup_proxy_auth registers its own Fetch.requestPaused / attachedToTarget handlers
+    # (which continue everything), so a guard registered before it would be silently replaced
+    wire = _Wire(); browser = _session(wire, browser_request_allowed)
+    browser._register_request_guard()
+    wire.client.register.Fetch.requestPaused(lambda event, session_id=None: wire.sent.append(("proxy-handler", None, None)))
+    await browser._setup_request_guard()
+    await wire.client.emit_event("Fetch.requestPaused", _paused("R1", "file:///etc/passwd"), "S1")
+    await wire.settle()
+    assert ("Fetch.failRequest", "R1", "S1") in wire.answers() and not [c for c in wire.sent if c[0] == "proxy-handler"]
+
+
+# ── connecting: nothing may run before the guard is on it ──
+
+class _ChromeStub:
+    """What Chrome answers the commands connect() sends (shapes as in the CDP protocol)."""
+    def __init__(self):
+        self.sent = []
+        self.targets = [{"targetId": "T1", "type": "page", "title": "", "url": "about:blank", "attached": False, "canAccessOpener": False}]
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.sent.append((method, params, session_id))
+        if method == "Target.getTargets":
+            return {"targetInfos": self.targets}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "S1"}
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": self.targets[0]}
+        if method == "Runtime.evaluate":
+            return {"result": {"type": "number", "value": 2, "description": "2"}}
+        return {}
+
+    def methods(self):
+        return [m for m, p, s in self.sent]
+
+
+async def _connect(monkeypatch, **profile):
+    from src.environment.browser.browser import session as session_module
+    chrome = _ChromeStub()
+
+    class StubbedClient(CDPClient):
+        async def start(self): pass
+        async def send_raw(self, method, params=None, session_id=None): return await chrome.send_raw(method, params, session_id)
+        async def stop(self): pass
+
+    monkeypatch.setattr(session_module, "CDPClient", StubbedClient)
+    browser = Browser(browser_profile=BrowserProfile(**profile), headless=True, cdp_url="ws://unused", is_local=False,
+                      **({"request_guard": browser_request_allowed} if profile.pop("guarded", True) else {}))
+    await browser.connect()
+    await asyncio.sleep(0.2)            # the tab-created / focus events connect() dispatches run their handlers
+    await browser.event_bus.stop(clear=True, timeout=1)
+    return browser, chrome
+
+
+@pytest.mark.asyncio
+async def test_connect_makes_browser_level_auto_attach_wait_and_registers_the_handler_first(monkeypatch):
+    from src.environment.browser.browser import session as session_module
+    order = []
+    real = session_module.BrowserSession._register_request_guard
+
+    def spy(self):
+        order.append("registered"); return real(self)
+
+    monkeypatch.setattr(session_module.BrowserSession, "_register_request_guard", spy)
+    browser, chrome = await _connect(monkeypatch)
+    first_attach = next(i for i, (m, p, s) in enumerate(chrome.sent) if m == "Target.setAutoAttach" and s is None)
+    assert order[0] == "registered" and not [m for m, p, s in chrome.sent[:first_attach]]   # before the first command of all
+    assert chrome.sent[first_attach][1] == {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}
+    page_steps = [m for m, p, s in chrome.sent if s == "S1" and m in GUARD_STEPS[:4]]
+    assert page_steps == GUARD_STEPS[:4]
+
+
+@pytest.mark.asyncio
+async def test_without_a_guard_browser_level_auto_attach_does_not_wait(monkeypatch):
+    browser, chrome = await _connect(monkeypatch, guarded=False)
+    attach = next(p for m, p, s in chrome.sent if m == "Target.setAutoAttach")
+    assert attach["waitForDebuggerOnStart"] is False
+    assert not [m for m in chrome.methods() if m in ("Fetch.enable", "Network.emulateNetworkConditionsByRule")]
 
 
 @pytest.mark.asyncio
@@ -241,7 +421,9 @@ async def test_audit_page_installs_the_guard_on_the_browser(monkeypatch):
     seen = {}
 
     class FakeBrowser:
+        crashed = False
         def __init__(self, **kw): seen.update(kw)
+        def browser_process(self): return None
         async def start(self): pass
         async def stop(self): pass
         async def get_current_page(self):
@@ -259,3 +441,77 @@ async def test_audit_page_installs_the_guard_on_the_browser(monkeypatch):
 def test_a_real_browser_object_carries_the_guard_into_its_profile():
     browser = Browser(browser_profile=BrowserProfile(), headless=True, request_guard=browser_request_allowed)
     assert browser.browser_profile.request_guard is browser_request_allowed
+
+
+# ── a crashed target ends the audit's browser (abort_on_crash) ──
+
+class _Proc:
+    """The part of psutil.Process the session uses: kill() and children(recursive=True)."""
+    def __init__(self, children=()):
+        self._children, self.killed = list(children), False
+    def children(self, recursive=False): return list(self._children)
+    def kill(self): self.killed = True
+
+
+def _crashed(target_id="T1"):
+    # the shape of Target.targetCrashed (cdp_use.cdp.target.events.TargetCrashedEvent)
+    return {"targetId": target_id, "status": "oom", "errorCode": 0}
+
+
+@pytest.mark.asyncio
+async def test_connect_listens_for_crashes_only_when_asked_to_abort_on_crash(monkeypatch):
+    browser, chrome = await _connect(monkeypatch, abort_on_crash=True)
+    assert ("Target.setDiscoverTargets", {"discover": True}, None) in chrome.sent       # crash events need discovery
+    browser2, chrome2 = await _connect(monkeypatch)
+    assert "Target.setDiscoverTargets" not in chrome2.methods()
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_target_kills_the_browser_and_its_processes_and_is_remembered():
+    from types import SimpleNamespace
+    wire = _Wire(); browser = _session(wire, None)
+    renderer, gpu, main = _Proc(), _Proc(), _Proc(children=[]); main._children = [renderer, gpu]
+    browser._local_browser_watchdog = SimpleNamespace(_subprocess=main)
+    wire.client.register.Target.targetCrashed(browser._on_target_crashed)
+    assert browser.crashed is False
+    await wire.client.emit_event("Target.targetCrashed", _crashed(), None)
+    assert browser.crashed is True and main.killed and renderer.killed and gpu.killed
+
+
+@pytest.mark.asyncio
+async def test_a_crash_with_no_local_process_only_marks_the_session():
+    wire = _Wire(); browser = _session(wire, None)
+    browser._local_browser_watchdog = None
+    wire.client.register.Target.targetCrashed(browser._on_target_crashed)
+    await wire.client.emit_event("Target.targetCrashed", _crashed(), None)
+    assert browser.crashed is True
+
+
+# ── downloads are refused in the browser ──
+
+@pytest.mark.asyncio
+async def test_connect_denies_downloads_when_the_profile_does_not_accept_them(monkeypatch):
+    browser, chrome = await _connect(monkeypatch, accept_downloads=False)
+    assert ("Browser.setDownloadBehavior", {"behavior": "deny"}, None) in chrome.sent
+    browser2, chrome2 = await _connect(monkeypatch)
+    assert "Browser.setDownloadBehavior" not in chrome2.methods()           # the default is unchanged
+
+
+async def _download_behavior(accept):
+    from src.environment.browser.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
+    wire = _Wire()
+    browser = Browser(browser_profile=BrowserProfile(accept_downloads=accept), headless=True)
+    browser._cdp_client_root = wire.client
+    browser.agent_focus = CDPSession.model_construct(cdp_client=wire.client, target_id="T1", session_id="S1")
+    DownloadsWatchdog.model_rebuild()
+    await DownloadsWatchdog(event_bus=browser.event_bus, browser_session=browser).attach_to_target("T1")
+    await browser.event_bus.stop(clear=True, timeout=1)
+    return [p for m, p, s in wire.sent if m == "Browser.setDownloadBehavior"], browser.browser_profile.downloads_path
+
+
+@pytest.mark.asyncio
+async def test_the_downloads_watchdog_does_not_turn_downloads_back_on():
+    denied, _ = await _download_behavior(False)
+    assert [d["behavior"] for d in denied] == ["deny"] and "downloadPath" not in denied[0]
+    allowed, path = await _download_behavior(True)
+    assert allowed[0]["behavior"] == "allow" and allowed[0]["downloadPath"] == str(path.resolve())
