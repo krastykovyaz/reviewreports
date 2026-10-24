@@ -1,6 +1,6 @@
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from enum import Enum
 from functools import cache
 from pathlib import Path
@@ -364,7 +364,7 @@ class BrowserLaunchArgs(BaseModel):
 
 	env: dict[str, str | float | bool] | None = Field(
 		default=None,
-		description='Extra environment variables to set when launching the browser. If None, inherits from the current process.',
+		description='The complete environment of the launched browser process (nothing is inherited). If None, inherits from the current process.',
 	)
 	executable_path: str | Path | None = Field(
 		default=None,
@@ -561,6 +561,17 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 
 	# custom options we provide that aren't native playwright kwargs
 	disable_security: bool = Field(default=False, description='Disable browser security features.')
+	request_guard: Callable[[str], Awaitable[bool]] | None = Field(
+		default=None,
+		exclude=True,
+		description='Async predicate called with the URL of EVERY request the browser makes (navigations, redirect hops, subresources, iframes, form posts) '
+		'before it is sent; False (or an exception) fails the request with BlockedByClient. None = no filtering. The session refuses to start if it cannot install the filter.',
+	)
+	abort_on_crash: bool = Field(
+		default=False,
+		description='Kill the browser process as soon as any target (tab, frame, worker) reports that it crashed, e.g. a renderer that ran out of '
+		'memory. Every pending and later CDP call then fails at once, instead of waiting for a page that is gone.',
+	)
 	deterministic_rendering: bool = Field(default=False, description='Enable deterministic rendering flags.')
 	allowed_domains: list[str] | set[str] | None = Field(
 		default=None,

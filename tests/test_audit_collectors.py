@@ -247,27 +247,11 @@ async def test_links_none_is_na():
 
 @pytest.mark.asyncio
 async def test_links_checks_and_flags_dead_ones(monkeypatch):
-    class FakeResponse:
-        def __init__(self, code):
-            self.status_code = code
+    def handler(request):
+        return httpx.Response(200 if "good" in str(request.url) else 404)
 
-    class FakeAsyncClient:
-        def __init__(self, *a, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def head(self, url):
-            return FakeResponse(200 if "good" in url else 404)
-
-        async def get(self, url):
-            return FakeResponse(200 if "good" in url else 404)
-
-    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    from tests.helpers import mock_http
+    mock_http(monkeypatch, handler)
     links = [{"href": "https://good.example/", "text": "Good", "external": True, "nofollow": False}, {"href": "https://tsech.online/dead", "text": "Dead", "external": False, "nofollow": False}]
     pillar = await collect_broken_links(_facts(links=links))
     checks = {f.check: f for f in pillar.findings}

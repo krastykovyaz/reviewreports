@@ -2,16 +2,18 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, Union, cast
 
 import httpx
+import psutil
 from bubus import EventBus
 from cdp_use import CDPClient
 from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
 from cdp_use.cdp.network import Cookie
-from cdp_use.cdp.target import AttachedToTargetEvent, SessionID, TargetID
+from cdp_use.cdp.target import AttachedToTargetEvent, SessionID, TargetCrashedEvent, TargetID
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from uuid_extensions import uuid7str
 
@@ -52,6 +54,41 @@ DEFAULT_BROWSER_PROFILE = BrowserProfile()
 _LOGGED_UNIQUE_SESSION_IDS = set()  # track unique session IDs that have been logged to make sure we always assign a unique enough id to new sessions and avoid ambiguity in logs
 red = '\033[91m'
 reset = '\033[0m'
+
+
+# Request guard (see BrowserSession._register_request_guard). Fetch does not see WebSockets, so ws:// and wss:// (any host,
+# port or path) are taken "offline" instead; a URLPattern with a wildcard port also matches the default one.
+_BLOCK_WEBSOCKETS: dict = {
+	'matchedNetworkConditions': [
+		{'urlPattern': pattern, 'offline': True, 'latency': 0, 'downloadThroughput': -1, 'uploadThroughput': -1}
+		for pattern in ('ws://*:*/*', 'wss://*:*/*')
+	]
+}
+# The rule only applies while the Network domain is enabled; nothing here reads response bodies, so none are buffered.
+_GUARD_NETWORK_ENABLE: dict = {'maxTotalBufferSize': 0, 'maxResourceBufferSize': 0}
+_GUARD_AUTO_ATTACH: dict = {'autoAttach': True, 'waitForDebuggerOnStart': True, 'flatten': True}
+# Dedicated workers have no Fetch domain of their own: the page (or frame) that owns one pauses its requests.
+_TARGET_TYPES_WITHOUT_FETCH = frozenset({'worker'})
+# Shared and service workers are never resumed (a service worker script is refused outright, see _on_paused).
+_TARGET_TYPES_NEVER_RUN = frozenset({'shared_worker', 'service_worker'})
+_GUARD_TARGET_TIMEOUT_SEC = 20.0
+
+
+def _may_run(target_info: dict) -> bool:
+	"""Whether a target that has been put under the request guard may be resumed.
+
+	Everything may, except workers that cannot be filtered reliably. Against Chromium: a dedicated worker created by the MAIN
+	frame of a target (a page, a popup, an out-of-process iframe: its parentFrameId is that target's own id) obeys the
+	WebSocket rule set on its session, and its fetches are paused by its owner; one created by a cross-origin iframe that shares
+	its page's process opened its socket however the rule was set. Those (and shared/service workers) are left paused, which
+	keeps them from running while their page is alive. RESIDUAL: Chrome lets a paused worker run once its owner goes away (the
+	page navigates, removes the frame, closes the popup), and then neither Fetch nor the rule is guaranteed to apply."""
+	target_type = target_info.get('type')
+	if target_type in _TARGET_TYPES_NEVER_RUN:
+		return False
+	if target_type == 'worker':
+		return bool(target_info.get('parentFrameId')) and target_info.get('parentFrameId') == target_info.get('parentId')
+	return True
 
 
 class CDPSession(BaseModel):
@@ -228,6 +265,8 @@ class BrowserSession(BaseModel):
 		headers: dict[str, str] | None = None,
 		# From BrowserLaunchArgs
 		env: dict[str, str | float | bool] | None = None,
+		request_guard: Callable[[str], Awaitable[bool]] | None = None,
+		abort_on_crash: bool | None = None,
 		executable_path: str | Path | None = None,
 		headless: bool | None = None,
 		args: list[str] | None = None,
@@ -346,6 +385,7 @@ class BrowserSession(BaseModel):
 	_cached_browser_state_summary: Any = PrivateAttr(default=None)
 	_cached_selector_map: dict[int, EnhancedDOMTreeNode] = PrivateAttr(default_factory=dict)
 	_downloaded_files: list[str] = PrivateAttr(default_factory=list)  # Track files downloaded during this session
+	_crashed: bool = PrivateAttr(default=False)  # a target crashed and abort_on_crash killed the browser
 
 	# Watchdogs
 	_crash_watchdog: Any | None = PrivateAttr(default=None)
@@ -1326,9 +1366,20 @@ class BrowserSession(BaseModel):
 			self._cdp_client_root = CDPClient(self.cdp_url)
 			assert self._cdp_client_root is not None
 			await self._cdp_client_root.start()
+			# With a request guard every target that attaches is held at its first instruction until the guard is on it
+			# (see _register_request_guard), so the handler that does that must exist before the first one can attach.
+			guarded = self.browser_profile.request_guard is not None
+			if guarded:
+				self._register_request_guard()
 			await self._cdp_client_root.send.Target.setAutoAttach(
-				params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
+				params={'autoAttach': True, 'waitForDebuggerOnStart': guarded, 'flatten': True}
 			)
+			if self.browser_profile.abort_on_crash:
+				self._cdp_client_root.register.Target.targetCrashed(self._on_target_crashed)
+				await self._cdp_client_root.send.Target.setDiscoverTargets(params={'discover': True})  # crash events need discovery
+			if not self.browser_profile.accept_downloads:
+				# Before anything can load: a page must not get to write files here (the downloads watchdog keeps this setting)
+				await self._cdp_client_root.send.Browser.setDownloadBehavior(params={'behavior': 'deny'})
 			self.logger.debug('CDP client connected successfully')
 
 			# Get browser targets to find available contexts/pages
@@ -1400,6 +1451,8 @@ class BrowserSession(BaseModel):
 
 			# Enable proxy authentication handling if configured
 			await self._setup_proxy_auth()
+			# Filter every request the browser makes through the profile's request_guard, if one is set
+			await self._setup_request_guard()
 
 			# Verify the session is working
 			try:
@@ -1435,6 +1488,156 @@ class BrowserSession(BaseModel):
 			raise RuntimeError(f'Failed to establish CDP connection to browser: {e}') from e
 
 		return self
+
+	def browser_process(self) -> psutil.Process | None:
+		"""The local browser process this session launched (None for a remote browser, or before/after it ran)."""
+		return self._local_browser_watchdog._subprocess if self._local_browser_watchdog else None
+
+	@property
+	def crashed(self) -> bool:
+		"""True once a target crashed and abort_on_crash killed the browser."""
+		return self._crashed
+
+	def _on_target_crashed(self, event: TargetCrashedEvent, session_id: SessionID | None = None) -> None:
+		"""abort_on_crash: a crashed renderer never answers the commands already sent to it, so nothing waiting on it would
+		ever return. Killing the browser makes the CDP connection drop, which fails every pending call immediately."""
+		self._crashed = True
+		self.logger.warning(f'Target crashed ({event.get("status")}), killing the browser')
+		proc = self.browser_process()
+		if proc is None:
+			return
+		try:
+			for child in proc.children(recursive=True):
+				try:
+					child.kill()
+				except Exception:
+					pass
+			proc.kill()
+		except Exception as e:
+			self.logger.debug(f'Killing the crashed browser failed: {type(e).__name__}: {e}')
+
+	def _register_request_guard(self) -> None:
+		"""Install the Target.attachedToTarget handler that puts the request guard on every target Chrome attaches us to.
+
+		A target (an out-of-process iframe, a popup) is attached WAITING FOR THE DEBUGGER (auto-attach is set with
+		waitForDebuggerOnStart): it executes nothing and requests nothing until Runtime.runIfWaitingForDebugger, so the handler
+		turns Fetch on for it (and the websocket rule, and the same auto-attach for ITS children) first and only then lets it
+		run. FAIL-CLOSED: if any of that fails the target is simply never resumed. Workers that cannot be filtered reliably
+		are never resumed either (_may_run), and a service worker script is refused outright, so none ever starts."""
+		guard = self.browser_profile.request_guard
+		if guard is None:
+			return
+		assert self._cdp_client_root
+		client = self._cdp_client_root
+		pending: set = set()
+
+		def _on_paused(event: RequestPausedEvent, session_id: SessionID | None = None):
+			request_id = event.get('requestId')
+			if not request_id:
+				return
+			request = event.get('request') or {}
+			url = request.get('url') or ''
+			# A service worker would run outside any page, started and stopped by the browser itself: its script (and anything
+			# it imports) is the one request that carries this header, so no service worker is ever installed.
+			is_service_worker_script = any(str(name).lower() == 'service-worker' for name in (request.get('headers') or {}))
+
+			async def _decide():
+				try:
+					allowed = not is_service_worker_script and await guard(url) is True
+				except Exception as e:
+					self.logger.debug(f'request_guard failed for {url[:200]}: {type(e).__name__}: {e}')
+					allowed = False
+				try:
+					if allowed:
+						await client.send.Fetch.continueRequest(params={'requestId': request_id}, session_id=session_id)
+					else:
+						self.logger.debug(f'Blocked request to {url[:200]}')
+						await client.send.Fetch.failRequest(params={'requestId': request_id, 'errorReason': 'BlockedByClient'}, session_id=session_id)
+				except Exception as e:
+					self.logger.debug(f'Fetch answer for {request_id} failed: {type(e).__name__}: {e}')
+
+			task = asyncio.create_task(_decide())
+			pending.add(task)
+			task.add_done_callback(pending.discard)
+
+		def _on_attached(event: AttachedToTargetEvent, session_id: SessionID | None = None):
+			sid = event.get('sessionId')
+			if not sid:
+				return
+			target_info = event.get('targetInfo') or {}
+			target_type = target_info.get('type')
+
+			async def _install():
+				if not _may_run(target_info):
+					# Left paused. It is NOT released while its page lives; if the page destroys the owner (removes the
+					# frame, closes the popup) Chrome lets it run once - see _may_run for why these cannot be filtered.
+					self.logger.debug(f'Not starting a {target_type} target: {target_info.get("url", "")[:200]}')
+					return
+				try:
+					if target_type not in _TARGET_TYPES_WITHOUT_FETCH:
+						await client.send.Fetch.enable(params=self._request_guard_fetch_params(), session_id=sid)
+					# One at a time, each ANSWERED before the target runs
+					await client.send.Network.enable(params=_GUARD_NETWORK_ENABLE, session_id=sid)
+					await client.send.Network.emulateNetworkConditionsByRule(params=_BLOCK_WEBSOCKETS, session_id=sid)
+					await client.send.Target.setAutoAttach(params=_GUARD_AUTO_ATTACH, session_id=sid)
+				except Exception as e:
+					self.logger.warning(f'Request guard could not be put on a {target_type} target, leaving it paused: {type(e).__name__}: {e}')
+					return
+				try:
+					await client.send.Runtime.runIfWaitingForDebugger(session_id=sid)
+				except Exception as e:
+					self.logger.debug(f'Resuming a {target_type} target failed: {type(e).__name__}: {e}')
+
+			async def _guard_target():
+				try:
+					# bounded: a target that never answers must not keep this task (and its session) alive for the whole audit
+					await asyncio.wait_for(_install(), timeout=_GUARD_TARGET_TIMEOUT_SEC)
+				except asyncio.TimeoutError:
+					self.logger.warning(f'Request guard timed out on a {target_type} target, leaving it paused')
+
+			task = asyncio.create_task(_guard_target())
+			pending.add(task)
+			task.add_done_callback(pending.discard)
+
+		# cdp_use keeps ONE handler per event: registering again replaces (so calling this twice is harmless, and the guard
+		# must be registered after anything else that registers these two, e.g. _setup_proxy_auth).
+		client.register.Fetch.requestPaused(_on_paused)
+		client.register.Target.attachedToTarget(_on_attached)
+
+	def _request_guard_fetch_params(self) -> dict:
+		proxy_cfg = self.browser_profile.proxy
+		return {
+			'handleAuthRequests': bool(proxy_cfg and proxy_cfg.username and proxy_cfg.password),
+			'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}],
+		}
+
+	async def _setup_request_guard(self) -> None:
+		"""Pause every request of every target at the Request stage and let browser_profile.request_guard decide.
+
+		Without this only the URL given to goto() is ever vetted; the page's subresources, iframes, form posts and script
+		fetches (and the hops of a redirect, each a new paused request) would go wherever the page says. Allowed requests
+		are continued, the rest fail with BlockedByClient. Fetch cannot see WebSockets, so every target also gets a rule
+		that takes ws:// and wss:// offline (Network.emulateNetworkConditionsByRule: unlike Network.setBlockedURLs it
+		survives the page navigating, which was verified against Chromium). FAIL-CLOSED: a guard that raises blocks, and
+		failing to install the filter on the page raises (the session must not run unfiltered). Child targets (out-of-process
+		iframes, workers, popups) are guarded before they run, see _register_request_guard."""
+		guard = self.browser_profile.request_guard
+		if guard is None:
+			return
+		assert self._cdp_client_root
+		client = self._cdp_client_root
+		self._register_request_guard()
+		if not self.agent_focus:
+			raise RuntimeError('Cannot install the request guard: no page session')
+		sid = self.agent_focus.session_id
+		try:
+			await client.send.Fetch.enable(params=self._request_guard_fetch_params(), session_id=sid)
+			await client.send.Network.enable(params=_GUARD_NETWORK_ENABLE, session_id=sid)
+			await client.send.Network.emulateNetworkConditionsByRule(params=_BLOCK_WEBSOCKETS, session_id=sid)
+			# out-of-process iframes and the page's workers attach to the PAGE's session, not to the browser's
+			await client.send.Target.setAutoAttach(params=_GUARD_AUTO_ATTACH, session_id=sid)
+		except Exception as e:
+			raise RuntimeError(f'Cannot install the request guard on the page: {e}') from e
 
 	async def _setup_proxy_auth(self) -> None:
 		"""Enable CDP Fetch auth handling for authenticated proxy, if credentials provided.

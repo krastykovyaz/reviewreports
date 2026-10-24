@@ -162,6 +162,7 @@ async def test_run_app_review_rejects_nonexistent_path():
 import os  # noqa: E402
 
 from src.review.app_review import collect_security_hygiene as _hygiene  # noqa: E402
+from tests.helpers import run
 
 _REAL_SECRET_CASES = [
     ("app.py", 'SECRET_KEY = "aB3dE5gH7jK9mN1pQ3sT5vW7yZ2bC4dF"\n'),

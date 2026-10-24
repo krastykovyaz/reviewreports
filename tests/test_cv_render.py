@@ -102,6 +102,76 @@ def test_render_cv_markdown_omits_empty_sections():
     assert "## Languages" not in md
 
 
+# ── layout: a long, realistic profile must still fit the one-page frame ──
+
+def _long_profile():
+    from src.cv.schema import CVProfile
+    return CVProfile.model_validate({
+        "name": "Aleksandr Koviazin", "role": "Team Lead MLE / MLOps / DS",
+        "contact": {"email": "alexkovyaz@gmail.com", "location": "Luxembourg / Moscow",
+                    "links": ["aleksandr-kovyazin", "krastykovyaz", "kaggle.com/alexkovyaz"]},
+        "experience": [
+            {"title": "Team Lead MLE/MLOps/DS", "organization": "Finmars", "location": "Luxembourg", "start": "2024", "end": "Present", "bullets": ["Finance systems for investors."]},
+            {"title": "Team Lead (15 specialists)", "organization": "Sberbank", "start": "2022", "end": "2024", "bullets": ["IVR/ChatBot systems."]},
+            {"title": "Middle ML Engineer", "organization": "Sberbank", "start": "2020", "end": "2021", "bullets": ["ChatBot: BiLSTM/BERT, 100k+ requests."]},
+        ],
+        "education": [{"degree": "PhD CS in Finance", "institution": "Luxembourg Uni"}, {"degree": "Computer Science", "institution": "Ecole 42, Paris"},
+                      {"degree": "ML/DS/MLOps", "institution": "Various courses"}],
+        "skills": ["Python", "Django", "BiLSTM", "BERT", "GPT", "LightGBM", "ML/DL", "NLP/CV", "LLM", "MLOps", "Data Science", "Agents"],
+        "languages": ["English (fluent)", "Russian (native)", "French (basic)"],
+    })
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_long_skills_list_still_fits_one_pdf_page(template):
+    from weasyprint import HTML
+    assert len(HTML(string=render_cv_html(_long_profile(), template)).render().pages) == 1
+
+
+def test_modern_sidebar_skills_are_one_flowing_line_not_a_bullet_per_skill():
+    html = render_cv_html(_long_profile(), "modern")
+    assert "Python · Django" in html and "<li>Python</li>" not in html
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_job_date_never_wraps_onto_two_lines(template):
+    # The title shrinks and wraps instead; the date keeps its width.
+    assert "white-space: nowrap" in render_cv_html(_long_profile(), template)
+
+
+# ── a CV longer than one page: nothing is cut off ──
+
+def _very_long_profile():
+    p = _long_profile().model_dump()
+    p["education"] = [{"degree": f"Degree {i}", "institution": f"INSTITUTION-{i}", "year": "2000"} for i in range(14)]
+    p["languages"] = ["English (fluent)", "Russian (native)"]
+    return CVProfile.model_validate(p)
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_the_on_screen_card_grows_instead_of_clipping(template):
+    import re
+    html = render_cv_html(_very_long_profile(), template)
+    rule = re.search(r"\.doc \{[^}]*\}", html).group(0)
+    assert "overflow: hidden" not in rule and "overflow:hidden" not in rule
+    assert "min-height: 569px" in html or template != "modern"
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_very_long_cv_keeps_every_entry_in_the_pdf(template):
+    from io import BytesIO
+    from pypdf import PdfReader
+    pages = PdfReader(BytesIO(render_cv_pdf(_very_long_profile(), template))).pages
+    text = "\n".join(p.extract_text() for p in pages)
+    assert len(pages) >= 2 and all(f"INSTITUTION-{i}" in text for i in range(14))
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_languages_are_rendered_by_every_template(template):
+    # Classic and Compact used to drop the field silently.
+    assert "Russian (native)" in render_cv_html(_long_profile(), template)
+
+
 # ---- 2026-10-02 validation review regressions ------------------------------------
 
 

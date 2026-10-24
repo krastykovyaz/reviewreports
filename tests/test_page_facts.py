@@ -53,3 +53,49 @@ async def test_gather_page_facts_rejects_non_object_result():
 
     with pytest.raises(RuntimeError, match="did not return an object"):
         await gather_page_facts(BrokenPage())
+
+
+# ── the real script in a real browser ────────────────────────────────────────
+
+def _chromium_available() -> bool:
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            import os
+            return os.path.exists(pw.chromium.executable_path)
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _chromium_available(), reason="needs a Playwright Chromium")
+@pytest.mark.parametrize("sandboxed", [False, True])
+def test_the_page_facts_script_runs_in_a_real_browser_even_on_a_sandboxed_document(sandboxed):
+    """tsech.online serves every shared card with `Content-Security-Policy: sandbox`, where reading document.cookie throws a
+    SecurityError. That used to fail the whole audit of such a page; the other facts must still come back."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from playwright.sync_api import sync_playwright
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            if sandboxed:
+                self.send_header("Content-Security-Policy", "sandbox allow-scripts")
+            self.end_headers()
+            self.wfile.write(b"<!doctype html><html><head><title>Card</title></head><body><h1>Hello there</h1><p>Some words on a page.</p></body></html>")
+        def log_message(self, *a): pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(args=["--no-sandbox"])
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{srv.server_port}/")
+            facts = page.evaluate(PAGE_FACTS_JS)
+            facts = json.loads(facts) if isinstance(facts, str) else facts
+            browser.close()
+    finally:
+        srv.shutdown()
+    assert facts["cookies"] == [] and facts["wordCount"] > 0

@@ -20,7 +20,7 @@ from src.audit.collectors.security_headers import collect_security_headers
 from src.audit.collectors.seo import collect_seo
 from src.audit.collectors.tech_stack import collect_tech_stack
 from src.audit.collectors.ux import collect_ux
-from src.audit.http_client import FetchResult, fetch, try_fetch
+from src.audit.http_client import FetchResult, assert_public_url, fetch, try_fetch
 from src.audit.page_facts import gather_page_facts
 from src.i18n import normalize_lang
 from src.i18n.core import make_translator
@@ -119,6 +119,8 @@ async def run_website_audit(url: str, model_name: Optional[str] = None, lang: st
     async with audit_page(homepage.url) as page:
         facts: Dict[str, Any] = await gather_page_facts(page)
         await assert_page_is_public(page)  # before anything read off the page is used
+        # A redirect/refresh/script that fired while the page settled may have left it somewhere internal.
+        await assert_public_url(str(facts.get("url") or ""))
         ux = await collect_ux(page, model_name=model_name, lang=lang)
 
     pillars: List[Pillar] = [
