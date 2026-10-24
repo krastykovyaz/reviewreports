@@ -61,6 +61,9 @@
   .modern .job-head > span:last-child { flex: none; white-space: nowrap; margin-left: 10px; }
   .modern .job-sub { font-size: 11px; color: var(--muted); margin: 1px 0 4px; font-style: italic; }
   .modern .job ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.5; color: #333; }
+  .modern .edu { font-size: 11px; line-height: 1.4; margin-bottom: 5px; color: #333; overflow-wrap: anywhere; }
+  .modern .edu-inst { color: var(--muted); }
+  .modern .edu-year { color: var(--muted); white-space: nowrap; margin-left: 4px; }
 
   @media print {
     .modern .side { padding: 33.4px 26px; }
@@ -72,12 +75,14 @@
     .modern .side ul { padding-left: 26px; }
     .modern .main { padding: 27.8px 29.7px; }
     .modern .main h4 { font-size: 20.4px; border-bottom-width: 3.7px; padding-bottom: 7.4px; margin: 0 0 16.7px; }
-    .modern .main section + section { margin-top: 18.5px; }
+    .modern .main section + section { margin-top: 15px; }
     .modern .summary { font-size: 21.3px; }
-    .modern .job { margin-bottom: 13px; }
+    .modern .job { margin-bottom: 10.5px; }
     .modern .job-head { font-size: 22.3px; }
     .modern .job-sub { font-size: 20.4px; margin: 1.9px 0 7.4px; }
     .modern .job ul { padding-left: 29.7px; font-size: 20.4px; }
+    .modern .edu { font-size: 19.6px; line-height: 1.35; margin-bottom: 6px; }
+    .modern .edu-year { margin-left: 7.4px; }
   }
 </style>
 </head>
@@ -101,7 +106,7 @@
       <p>{{ profile.skills|join("\u00a0· ") }}</p>
       {% endif %}
 
-      {% if profile.education %}
+      {% if profile.education and not edu_in_main %}
       <h4>Education</h4>
       {% for edu in profile.education %}
       <p><strong>{{ edu.degree }}</strong><br>{{ edu.institution }}{% if edu.year %}, {{ edu.year }}{% endif %}</p>
@@ -133,6 +138,15 @@
           </ul>
           {% endif %}
         </div>
+        {% endfor %}
+      </section>
+      {% endif %}
+      {% if profile.education and edu_in_main %}
+      {# A CV with many degrees: the narrow sidebar would be taller than the page, so Education goes in the wide column. #}
+      <section>
+        <h4>Education</h4>
+        {% for edu in profile.education %}
+        <div class="edu"><strong>{{ edu.degree }}</strong>{% if edu.institution %} · <span class="edu-inst">{{ edu.institution }}</span>{% endif %}{% if edu.year %} <span class="edu-year">{{ edu.year }}</span>{% endif %}</div>
         {% endfor %}
       </section>
       {% endif %}

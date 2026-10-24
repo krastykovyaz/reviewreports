@@ -159,11 +159,15 @@ def test_the_on_screen_card_grows_instead_of_clipping(template):
 
 @pytest.mark.parametrize("template", TEMPLATES)
 def test_a_very_long_cv_keeps_every_entry_in_the_pdf(template):
+    """Long enough to overflow a page in any layout (the Modern template now fits 14 degrees on one page by moving Education into
+    its wide column, so 14 no longer forces a second page): every entry must still be there, on however many pages it takes."""
     from io import BytesIO
     from pypdf import PdfReader
-    pages = PdfReader(BytesIO(render_cv_pdf(_very_long_profile(), template))).pages
+    p = _very_long_profile().model_dump()
+    p["education"] = [{"degree": f"Degree {i}", "institution": f"INSTITUTION-{i}", "year": "2000"} for i in range(45)]
+    pages = PdfReader(BytesIO(render_cv_pdf(CVProfile.model_validate(p), template))).pages
     text = "\n".join(p.extract_text() for p in pages)
-    assert len(pages) >= 2 and all(f"INSTITUTION-{i}" in text for i in range(14))
+    assert len(pages) >= 2 and all(f"INSTITUTION-{i}" in text for i in range(45))
 
 
 @pytest.mark.parametrize("template", TEMPLATES)
